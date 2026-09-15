@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyraftkv"
+version = "0.1.0"
+description = "Fault-tolerant distributed key-value store built in Python"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Harsha" }
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
