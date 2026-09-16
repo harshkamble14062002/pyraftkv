@@ -14,3 +14,6 @@ class KVStore:
 
         del self._data[key]
         return True
+
+    def clear(self) -> None:
+        self._data.clear()
