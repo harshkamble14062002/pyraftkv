@@ -1,16 +1,23 @@
+from threading import RLock
+
+
 class KVStore:
     def __init__(self) -> None:
         self._data: dict[str, str] = {}
+        self._lock = RLock()
 
     def put(self, key: str, value: str) -> None:
-        self._data[key] = value
+        with self._lock:
+            self._data[key] = value
 
     def get(self, key: str) -> str | None:
-        return self._data.get(key)
+        with self._lock:
+            return self._data.get(key)
 
     def delete(self, key: str) -> bool:
-        if key not in self._data:
-            return False
+        with self._lock:
+            if key not in self._data:
+                return False
 
-        del self._data[key]
-        return True
+            del self._data[key]
+            return True
