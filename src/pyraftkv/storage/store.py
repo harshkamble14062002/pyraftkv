@@ -19,13 +19,9 @@ class KVStore:
             if key not in self._data:
                 return False
 
-<<<<<<< HEAD
             del self._data[key]
             return True
-=======
-        del self._data[key]
-        return True
 
     def clear(self) -> None:
-        self._data.clear()
->>>>>>> 00bd2ee (refactor(storage): add public clear operation)
+        with self._lock:
+            self._data.clear()
