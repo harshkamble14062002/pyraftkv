@@ -6,7 +6,7 @@ client = TestClient(app)
 
 
 def setup_function() -> None:
-    store._data.clear()
+    store.clear()
 
 
 def test_put_value():
