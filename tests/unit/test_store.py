@@ -39,3 +39,14 @@ def test_delete_missing_key():
     store = KVStore()
 
     assert store.delete("missing") is False
+
+def test_clear():
+    store = KVStore()
+
+    store.put("name", "harsha")
+    store.put("language", "python")
+
+    store.clear()
+
+    assert store.get("name") is None
+    assert store.get("language") is None
