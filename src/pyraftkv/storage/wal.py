@@ -1,5 +1,10 @@
 import json
+import os
 from pathlib import Path
+
+
+class WALCorruptionError(RuntimeError):
+    """Raised when a durable WAL record is corrupted."""
 
 
 class WAL:
@@ -26,22 +31,30 @@ class WAL:
     def _append(self, entry: dict[str, str | None]) -> None:
         with self.path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(entry) + "\n")
-
-
+            file.flush()
+            os.fsync(file.fileno())
 
     def replay(self) -> list[dict[str, str | None]]:
         if not self.path.exists():
             return []
 
+        lines = self.path.read_text(encoding="utf-8").splitlines()
         entries: list[dict[str, str | None]] = []
 
-        with self.path.open("r", encoding="utf-8") as file:
-            for line in file:
-                line = line.strip()
+        for index, line in enumerate(lines):
+            if not line.strip():
+                continue
 
-                if not line:
-                    continue
-
+            try:
                 entries.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                # Ignore an incomplete final WAL record.
+                if index == len(lines) - 1:
+                    break
+
+                # Corruption in the middle of the WAL is an error.
+                raise WALCorruptionError(
+                    f"Corrupted WAL record at line {index + 1}"
+                ) from exc
 
         return entries
