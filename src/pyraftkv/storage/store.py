@@ -25,7 +25,7 @@ class KVStore:
     def clear(self) -> None:
         with self._lock:
             self._data.clear()
-
+    
 
     def apply(self, entry: dict[str, str | None]) -> None:
         operation = entry["operation"]
@@ -44,3 +44,11 @@ class KVStore:
 
         else:
             raise ValueError(f"Unknown operation: {operation}")
+
+    def snapshot(self) -> dict[str, str]:
+        with self._lock:
+            return self._data.copy()
+
+    def restore(self, data: dict[str, str]) -> None:
+        with self._lock:
+            self._data = data.copy()
