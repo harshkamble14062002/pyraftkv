@@ -80,4 +80,3 @@ def test_existing_entries_are_not_overwritten(tmp_path):
     lines = wal_path.read_text().splitlines()
 
     assert len(lines) == 2
-
