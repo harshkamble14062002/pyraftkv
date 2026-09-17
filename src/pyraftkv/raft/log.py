@@ -90,3 +90,13 @@ class RaftLog:
             for entry in self._entries
             if entry.index >= index
         ]
+
+    def append_entry(self, entry: LogEntry) -> None:
+        expected_index = self.last_index + 1
+
+        if entry.index != expected_index:
+            raise ValueError(
+                f"Expected log index {expected_index}, got {entry.index}"
+            )
+
+        self._entries.append(entry)
