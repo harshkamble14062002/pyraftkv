@@ -25,3 +25,22 @@ class KVStore:
     def clear(self) -> None:
         with self._lock:
             self._data.clear()
+
+
+    def apply(self, entry: dict[str, str | None]) -> None:
+        operation = entry["operation"]
+        key = entry["key"]
+
+        if operation == "PUT":
+            value = entry["value"]
+
+            if value is None:
+                raise ValueError("PUT operation requires a value")
+
+            self.put(key, value)
+
+        elif operation == "DELETE":
+            self.delete(key)
+
+        else:
+            raise ValueError(f"Unknown operation: {operation}")
