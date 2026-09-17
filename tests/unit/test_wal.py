@@ -1,6 +1,8 @@
 import json
 
-from pyraftkv.storage.wal import WAL
+import pytest
+
+from pyraftkv.storage.wal import WAL, WALCorruptionError
 
 
 def test_append_put(tmp_path):
@@ -20,6 +22,7 @@ def test_append_put(tmp_path):
         "key": "name",
         "value": "harsha",
     }
+
 
 
 def test_append_delete(tmp_path):
@@ -108,3 +111,45 @@ def test_replay_entries(tmp_path):
             "value": None,
         },
     ]
+
+
+def test_replay_missing_wal_returns_empty(tmp_path):
+    wal = WAL(tmp_path / "missing.log")
+
+    assert wal.replay() == []
+
+def test_incomplete_final_record_is_ignored(tmp_path):
+    wal_path = tmp_path / "wal.log"
+
+    wal_path.write_text(
+        '{"operation":"PUT","key":"a","value":"1"}\n'
+        '{"operation":"PUT","key":"b"',
+        encoding="utf-8",
+    )
+
+    wal = WAL(wal_path)
+
+    entries = wal.replay()
+
+    assert entries == [
+        {
+            "operation": "PUT",
+            "key": "a",
+            "value": "1",
+        }
+    ]
+
+def test_corrupt_middle_record_raises_error(tmp_path):
+    wal_path = tmp_path / "wal.log"
+
+    wal_path.write_text(
+        '{"operation":"PUT","key":"a","value":"1"}\n'
+        'this-is-corrupted\n'
+        '{"operation":"PUT","key":"b","value":"2"}\n',
+        encoding="utf-8",
+    )
+
+    wal = WAL(wal_path)
+
+    with pytest.raises(WALCorruptionError):
+        wal.replay()
