@@ -80,3 +80,31 @@ def test_existing_entries_are_not_overwritten(tmp_path):
     lines = wal_path.read_text().splitlines()
 
     assert len(lines) == 2
+
+def test_replay_entries(tmp_path):
+    wal_path = tmp_path / "wal.log"
+    wal = WAL(wal_path)
+
+    wal.append_put("name", "harsha")
+    wal.append_put("language", "python")
+    wal.append_delete("name")
+
+    entries = wal.replay()
+
+    assert entries == [
+        {
+            "operation": "PUT",
+            "key": "name",
+            "value": "harsha",
+        },
+        {
+            "operation": "PUT",
+            "key": "language",
+            "value": "python",
+        },
+        {
+            "operation": "DELETE",
+            "key": "name",
+            "value": None,
+        },
+    ]
