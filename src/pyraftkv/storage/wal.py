@@ -58,3 +58,8 @@ class WAL:
                 ) from exc
 
         return entries
+
+    def truncate(self) -> None:
+        with self.path.open("w", encoding="utf-8") as file:
+            file.flush()
+            os.fsync(file.fileno())
