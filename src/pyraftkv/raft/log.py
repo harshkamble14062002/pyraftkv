@@ -75,28 +75,18 @@ class RaftLog:
         if index <= 0:
             raise ValueError("index must be greater than zero")
 
-        self._entries = [
-            entry
-            for entry in self._entries
-            if entry.index < index
-        ]
+        self._entries = [entry for entry in self._entries if entry.index < index]
 
     def entries_from(self, index: int) -> list[LogEntry]:
         if index <= 0:
             raise ValueError("index must be greater than zero")
 
-        return [
-            entry
-            for entry in self._entries
-            if entry.index >= index
-        ]
+        return [entry for entry in self._entries if entry.index >= index]
 
     def append_entry(self, entry: LogEntry) -> None:
         expected_index = self.last_index + 1
 
         if entry.index != expected_index:
-            raise ValueError(
-                f"Expected log index {expected_index}, got {entry.index}"
-            )
+            raise ValueError(f"Expected log index {expected_index}, got {entry.index}")
 
         self._entries.append(entry)

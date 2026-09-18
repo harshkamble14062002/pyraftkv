@@ -76,4 +76,3 @@ def test_reset_extends_deadline(
     timer.reset()
 
     assert timer._deadline > first_deadline
-

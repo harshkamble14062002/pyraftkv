@@ -17,6 +17,7 @@ def test_snapshot_survives_restart(tmp_path):
     assert restarted.get("name") == "harsha"
     assert restarted.get("language") == "python"
 
+
 def test_snapshot_truncates_wal(tmp_path):
     wal_path = tmp_path / "wal.log"
     snapshot_path = tmp_path / "snapshot.json"

@@ -19,6 +19,7 @@ def entry(
         ),
     )
 
+
 def test_rejects_old_term():
     state = RaftState(
         node_id="node-2",
@@ -56,6 +57,7 @@ def test_rejects_missing_previous_entry():
 
     assert response.success is False
 
+
 def test_rejects_previous_term_mismatch():
     state = RaftState(node_id="node-2")
     log = RaftLog()
@@ -81,6 +83,7 @@ def test_rejects_previous_term_mismatch():
     )
 
     assert response.success is False
+
 
 def test_appends_new_entries():
     state = RaftState(node_id="node-2")
@@ -134,6 +137,7 @@ def test_conflicting_suffix_is_replaced():
     assert log.get(3) == entry(3, 2, "c")
     assert log.get(4) == entry(4, 2, "d")
 
+
 def test_matching_existing_entry_is_not_duplicated():
     state = RaftState(node_id="node-2")
     log = RaftLog()
@@ -146,9 +150,7 @@ def test_matching_existing_entry_is_not_duplicated():
         AppendEntriesRequest(
             term=1,
             leader_id="node-1",
-            entries=(
-                entry(1, 1, "a"),
-            ),
+            entries=(entry(1, 1, "a"),),
         ),
     )
 

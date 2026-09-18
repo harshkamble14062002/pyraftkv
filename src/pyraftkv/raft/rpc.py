@@ -14,6 +14,7 @@ class RequestVoteResponse:
     term: int
     vote_granted: bool
 
+
 @dataclass(frozen=True)
 class AppendEntriesRequest:
     term: int

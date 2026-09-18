@@ -35,10 +35,7 @@ def handle_request_vote(
     if request.term > state.current_term:
         state.become_follower(term=request.term)
 
-    can_vote = (
-        state.voted_for is None
-        or state.voted_for == request.candidate_id
-    )
+    can_vote = state.voted_for is None or state.voted_for == request.candidate_id
 
     log_is_current = is_candidate_log_up_to_date(
         candidate_last_index=request.last_log_index,

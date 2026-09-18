@@ -30,8 +30,5 @@ def start_election_if_needed(
     )
 
     return {
-        peer_id: request
-        for peer_id in election.members
-        if peer_id != state.node_id
+        peer_id: request for peer_id in election.members if peer_id != state.node_id
     }
-

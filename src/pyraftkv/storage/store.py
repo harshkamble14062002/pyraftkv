@@ -25,7 +25,6 @@ class KVStore:
     def clear(self) -> None:
         with self._lock:
             self._data.clear()
-    
 
     def apply(self, entry: dict[str, str | None]) -> None:
         operation = entry["operation"]

@@ -50,6 +50,7 @@ def test_replication_indexes_are_initialized():
         "node-3": 0,
     }
 
+
 def test_build_request_uses_next_index():
     state = create_leader()
     log = populated_log()
@@ -67,10 +68,8 @@ def test_build_request_uses_next_index():
     assert request.prev_log_index == 1
     assert request.prev_log_term == 3
 
-    assert [
-        entry.index
-        for entry in request.entries
-    ] == [2, 3]
+    assert [entry.index for entry in request.entries] == [2, 3]
+
 
 def test_success_advances_replication_progress():
     state = create_leader()
@@ -111,6 +110,7 @@ def test_failure_moves_next_index_back():
 
     assert replication.next_index["node-2"] == 3
 
+
 def test_next_index_never_goes_below_one():
     state = create_leader()
     log = populated_log()
@@ -126,6 +126,7 @@ def test_next_index_never_goes_below_one():
     replication.record_failure("node-2")
 
     assert replication.next_index["node-2"] == 1
+
 
 def test_unknown_follower_is_rejected():
     state = create_leader()

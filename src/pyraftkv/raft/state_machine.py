@@ -20,9 +20,7 @@ def apply_command(
         store.delete(command.key)
 
     else:
-        raise ValueError(
-            f"Unknown Raft command: {command.operation}"
-        )
+        raise ValueError(f"Unknown Raft command: {command.operation}")
 
 
 def apply_committed_entries(
@@ -36,9 +34,7 @@ def apply_committed_entries(
         entry = log.get(next_index)
 
         if entry is None:
-            raise RuntimeError(
-                f"Missing committed log entry {next_index}"
-            )
+            raise RuntimeError(f"Missing committed log entry {next_index}")
 
         apply_command(
             store,
@@ -46,4 +42,3 @@ def apply_committed_entries(
         )
 
         state.last_applied = next_index
-
