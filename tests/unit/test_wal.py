@@ -24,7 +24,6 @@ def test_append_put(tmp_path):
     }
 
 
-
 def test_append_delete(tmp_path):
     wal_path = tmp_path / "wal.log"
     wal = WAL(wal_path)
@@ -84,6 +83,7 @@ def test_existing_entries_are_not_overwritten(tmp_path):
 
     assert len(lines) == 2
 
+
 def test_replay_entries(tmp_path):
     wal_path = tmp_path / "wal.log"
     wal = WAL(wal_path)
@@ -118,12 +118,12 @@ def test_replay_missing_wal_returns_empty(tmp_path):
 
     assert wal.replay() == []
 
+
 def test_incomplete_final_record_is_ignored(tmp_path):
     wal_path = tmp_path / "wal.log"
 
     wal_path.write_text(
-        '{"operation":"PUT","key":"a","value":"1"}\n'
-        '{"operation":"PUT","key":"b"',
+        '{"operation":"PUT","key":"a","value":"1"}\n{"operation":"PUT","key":"b"',
         encoding="utf-8",
     )
 
@@ -139,12 +139,13 @@ def test_incomplete_final_record_is_ignored(tmp_path):
         }
     ]
 
+
 def test_corrupt_middle_record_raises_error(tmp_path):
     wal_path = tmp_path / "wal.log"
 
     wal_path.write_text(
         '{"operation":"PUT","key":"a","value":"1"}\n'
-        'this-is-corrupted\n'
+        "this-is-corrupted\n"
         '{"operation":"PUT","key":"b","value":"2"}\n',
         encoding="utf-8",
     )

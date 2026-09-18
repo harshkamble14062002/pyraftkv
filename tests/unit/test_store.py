@@ -40,6 +40,7 @@ def test_delete_missing_key():
 
     assert store.delete("missing") is False
 
+
 def test_clear():
     store = KVStore()
 

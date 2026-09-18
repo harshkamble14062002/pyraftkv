@@ -110,4 +110,3 @@ def test_single_node_cluster_becomes_leader():
     assert requests == {}
     assert state.role == NodeRole.LEADER
     assert state.leader_id == "node-1"
-
