@@ -11,6 +11,7 @@ class NodeRole(str, Enum):
 @dataclass
 class RaftState:
     node_id: str
+    commit_index: int = 0
     current_term: int = 0
     voted_for: str | None = None
     leader_id: str | None = None
