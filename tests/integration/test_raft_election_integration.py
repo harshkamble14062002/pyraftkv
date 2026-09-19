@@ -81,3 +81,4 @@ def test_no_election_before_timeout():
 
     assert role == NodeRole.FOLLOWER
     assert node1.state.current_term == 0
+    
