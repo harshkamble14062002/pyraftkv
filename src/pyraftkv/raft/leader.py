@@ -4,6 +4,7 @@ from pyraftkv.raft.state import NodeRole, RaftState
 
 
 class LeaderReplication:
+    
     def __init__(
         self,
         state: RaftState,
@@ -19,13 +20,26 @@ class LeaderReplication:
         self.state = state
         self.log = log
 
-        self.followers = members - {state.node_id}
+        self.members = set(members)
 
-        self.next_index = {follower: log.last_index + 1 for follower in self.followers}
+        self.followers = self.members - {
+            state.node_id
+        }
 
-        self.match_index = {follower: 0 for follower in self.followers}
+        self.next_index = {
+            follower: log.last_index + 1
+            for follower in self.followers
+        }
 
-    def build_request(self, follower: str) -> AppendEntriesRequest:
+        self.match_index = {
+            follower: 0
+            for follower in self.followers
+        }
+    def build_request(
+        self,
+        follower: str,
+        leader_commit: int | None = None,
+    ) -> AppendEntriesRequest:
         if follower not in self.followers:
             raise ValueError(f"Unknown follower: {follower}")
 
@@ -38,12 +52,16 @@ class LeaderReplication:
 
         entries = tuple(self.log.entries_from(next_index))
 
+        if leader_commit is None:
+            leader_commit = self.state.commit_index
+
         return AppendEntriesRequest(
             term=self.state.current_term,
             leader_id=self.state.node_id,
             prev_log_index=prev_log_index,
             prev_log_term=prev_log_term,
             entries=entries,
+            leader_commit=leader_commit,
         )
 
     def record_success(
@@ -59,10 +77,17 @@ class LeaderReplication:
         else:
             last_replicated_index = request.prev_log_index
 
-        self.match_index[follower] = last_replicated_index
-        self.next_index[follower] = last_replicated_index + 1
+        self.match_index[follower] = max(
+            self.match_index[follower],
+            last_replicated_index,
+        )
 
-    def record_failure(self, follower: str) -> None:
+        self.next_index[follower] = self.match_index[follower] + 1
+
+    def record_failure(
+        self,
+        follower: str,
+    ) -> None:
         if follower not in self.followers:
             raise ValueError(f"Unknown follower: {follower}")
 
@@ -70,3 +95,29 @@ class LeaderReplication:
             1,
             self.next_index[follower] - 1,
         )
+
+    def advance_commit_index(self) -> int:
+        replicated_indexes = [
+            self.log.last_index,
+            *self.match_index.values(),
+        ]
+
+        replicated_indexes.sort(reverse=True)
+
+        quorum_position = len(self.members) // 2
+        candidate_index = replicated_indexes[quorum_position]
+
+        if candidate_index <= self.state.commit_index:
+            return self.state.commit_index
+
+        entry = self.log.get(candidate_index)
+
+        if entry is None:
+            return self.state.commit_index
+
+        if entry.term != self.state.current_term:
+            return self.state.commit_index
+
+        self.state.commit_index = candidate_index
+
+        return self.state.commit_index

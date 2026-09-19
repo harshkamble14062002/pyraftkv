@@ -1,7 +1,7 @@
 from pyraftkv.raft.election import ElectionTracker
 from pyraftkv.raft.election_trigger import start_election_if_needed
 from pyraftkv.raft.leader import LeaderReplication
-from pyraftkv.raft.log import RaftLog
+from pyraftkv.raft.log import RaftCommand, RaftLog
 from pyraftkv.raft.replication import handle_append_entries
 from pyraftkv.raft.rpc import (
     AppendEntriesRequest,
@@ -10,11 +10,15 @@ from pyraftkv.raft.rpc import (
     RequestVoteResponse,
 )
 from pyraftkv.raft.state import NodeRole, RaftState
+from pyraftkv.raft.state_machine import apply_committed_entries
 from pyraftkv.raft.timer import ElectionTimer
 from pyraftkv.raft.vote import handle_request_vote
 from pyraftkv.storage.store import KVStore
 from pyraftkv.transport.base import RaftTransport, TransportError
 
+
+class NotLeaderError(RuntimeError):
+    """Raised when a client write is sent to a non-leader node."""
 
 class RaftNode:
     def __init__(
@@ -202,3 +206,91 @@ class RaftNode:
                 results[follower_id] = False
 
         return results
+
+    def replicate_log(
+        self,
+        transport: RaftTransport,
+    ) -> None:
+        if self.state.role != NodeRole.LEADER:
+            raise NotLeaderError("Only the leader can replicate log entries")
+
+        self._initialize_leader_replication()
+
+        if self.replication is None:
+            raise RuntimeError("Leader replication state is unavailable")
+
+        for follower_id in sorted(self.replication.followers):
+            request = self.replication.build_request(
+                follower_id,
+                leader_commit=self.state.commit_index,
+            )
+
+            try:
+                response = transport.append_entries(
+                    follower_id,
+                    request,
+                )
+            except TransportError:
+                continue
+
+            if response.term > self.state.current_term:
+                self.state.become_follower(response.term)
+                self.replication = None
+                return
+
+            if response.success:
+                self.replication.record_success(
+                    follower_id,
+                    request,
+                )
+            else:
+                self.replication.record_failure(
+                    follower_id,
+                )
+
+    def put(
+        self,
+        key: str,
+        value: str,
+        transport: RaftTransport,
+    ) -> bool:
+        if self.state.role != NodeRole.LEADER:
+            raise NotLeaderError(
+                f"Node {self.node_id} is not the leader"
+            )
+
+        entry = self.log.append(
+            term=self.state.current_term,
+            command=RaftCommand(
+                operation="PUT",
+                key=key,
+                value=value,
+            ),
+        )
+
+        self._initialize_leader_replication()
+
+        self.replicate_log(transport)
+
+        if self.state.role != NodeRole.LEADER:
+            return False
+
+        if self.replication is None:
+            return False
+
+        self.replication.advance_commit_index()
+
+        if self.state.commit_index < entry.index:
+            return False
+
+        apply_committed_entries(
+            self.state,
+            self.log,
+            self.store,
+        )
+
+        # Followers received the entry before the leader knew it was committed.
+        # Send the updated leader_commit so they can apply it too.
+        self.send_heartbeats(transport)
+
+        return True
