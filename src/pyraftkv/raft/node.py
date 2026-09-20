@@ -20,6 +20,7 @@ from pyraftkv.transport.base import RaftTransport, TransportError
 class NotLeaderError(RuntimeError):
     """Raised when a client write is sent to a non-leader node."""
 
+
 class RaftNode:
     def __init__(
         self,
@@ -207,6 +208,46 @@ class RaftNode:
 
         return results
 
+    def _replicate_to_follower(
+        self,
+        follower_id: str,
+        transport: RaftTransport,
+    ) -> bool:
+        if self.replication is None:
+            raise RuntimeError("Leader replication state is unavailable")
+
+        while self.state.role == NodeRole.LEADER:
+            request = self.replication.build_request(
+                follower_id,
+                leader_commit=self.state.commit_index,
+            )
+
+            try:
+                response = transport.append_entries(
+                    follower_id,
+                    request,
+                )
+            except TransportError:
+                return False
+
+            if response.term > self.state.current_term:
+                self.state.become_follower(
+                    term=response.term,
+                )
+                self.replication = None
+                return False
+
+            if response.success:
+                self.replication.record_success(
+                    follower_id,
+                    request,
+                )
+                return True
+
+            self.replication.record_failure(follower_id)
+
+        return False
+
     def replicate_log(
         self,
         transport: RaftTransport,
@@ -220,56 +261,34 @@ class RaftNode:
             raise RuntimeError("Leader replication state is unavailable")
 
         for follower_id in sorted(self.replication.followers):
-            request = self.replication.build_request(
+            self._replicate_to_follower(
                 follower_id,
-                leader_commit=self.state.commit_index,
+                transport,
             )
 
-            try:
-                response = transport.append_entries(
-                    follower_id,
-                    request,
-                )
-            except TransportError:
-                continue
-
-            if response.term > self.state.current_term:
-                self.state.become_follower(response.term)
-                self.replication = None
+            if self.state.role != NodeRole.LEADER:
                 return
 
-            if response.success:
-                self.replication.record_success(
-                    follower_id,
-                    request,
-                )
-            else:
-                self.replication.record_failure(
-                    follower_id,
-                )
-
-    def put(
+    def submit_command(
         self,
-        key: str,
-        value: str,
+        command: RaftCommand,
         transport: RaftTransport,
     ) -> bool:
         if self.state.role != NodeRole.LEADER:
-            raise NotLeaderError(
-                f"Node {self.node_id} is not the leader"
-            )
+            raise NotLeaderError(f"Node {self.node_id} is not the leader")
+
+        if command.operation not in {"PUT", "DELETE"}:
+            raise ValueError(f"Unsupported command: {command.operation}")
+
+        if command.operation == "PUT" and command.value is None:
+            raise ValueError("PUT command requires a value")
 
         entry = self.log.append(
             term=self.state.current_term,
-            command=RaftCommand(
-                operation="PUT",
-                key=key,
-                value=value,
-            ),
+            command=command,
         )
 
         self._initialize_leader_replication()
-
         self.replicate_log(transport)
 
         if self.state.role != NodeRole.LEADER:
@@ -289,8 +308,34 @@ class RaftNode:
             self.store,
         )
 
-        # Followers received the entry before the leader knew it was committed.
-        # Send the updated leader_commit so they can apply it too.
         self.send_heartbeats(transport)
 
         return True
+
+    def put(
+        self,
+        key: str,
+        value: str,
+        transport: RaftTransport,
+    ) -> bool:
+        return self.submit_command(
+            RaftCommand(
+                operation="PUT",
+                key=key,
+                value=value,
+            ),
+            transport,
+        )
+
+    def delete(
+        self,
+        key: str,
+        transport: RaftTransport,
+    ) -> bool:
+        return self.submit_command(
+            RaftCommand(
+                operation="DELETE",
+                key=key,
+            ),
+            transport,
+        )
