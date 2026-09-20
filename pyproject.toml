@@ -34,3 +34,6 @@ pythonpath = ["src"]
 [tool.ruff]
 line-length = 88
 target-version = "py312"
+
+[project.scripts]
+pyraftkv-node = "pyraftkv.runtime:main"
