@@ -20,6 +20,7 @@ from pyraftkv.transport.base import RaftTransport, TransportError
 class NotLeaderError(RuntimeError):
     """Raised when a client write is sent to a non-leader node."""
 
+
 class RaftNode:
     def __init__(
         self,
@@ -207,19 +208,15 @@ class RaftNode:
 
         return results
 
-    def replicate_log(
+    def _replicate_to_follower(
         self,
+        follower_id: str,
         transport: RaftTransport,
-    ) -> None:
-        if self.state.role != NodeRole.LEADER:
-            raise NotLeaderError("Only the leader can replicate log entries")
-
-        self._initialize_leader_replication()
-
+    ) -> bool:
         if self.replication is None:
             raise RuntimeError("Leader replication state is unavailable")
 
-        for follower_id in sorted(self.replication.followers):
+        while self.state.role == NodeRole.LEADER:
             request = self.replication.build_request(
                 follower_id,
                 leader_commit=self.state.commit_index,
@@ -231,31 +228,39 @@ class RaftNode:
                     request,
                 )
             except TransportError:
-                continue
+                return False
 
             if response.term > self.state.current_term:
-                self.state.become_follower(response.term)
+                self.state.become_follower(
+                    term=response.term,
+                )
                 self.replication = None
-                return
+                return False
 
             if response.success:
                 self.replication.record_success(
                     follower_id,
                     request,
                 )
-            else:
-                self.replication.record_failure(
-                    follower_id,
-                )
+                return True
 
     def submit_command(
         self,
         command: RaftCommand,
         transport: RaftTransport,
-    ) -> bool:
+    ) -> None:
         if self.state.role != NodeRole.LEADER:
-            raise NotLeaderError(
-                f"Node {self.node_id} is not the leader"
+            raise NotLeaderError("Only the leader can replicate log entries")
+
+        self._initialize_leader_replication()
+
+        if self.replication is None:
+            raise RuntimeError("Leader replication state is unavailable")
+
+        for follower_id in sorted(self.replication.followers):
+            self._replicate_to_follower(
+                follower_id,
+                transport,
             )
 
         if command.operation not in {"PUT", "DELETE"}:
