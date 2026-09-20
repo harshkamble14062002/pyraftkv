@@ -40,7 +40,6 @@ def elect_node1(transport, nodes):
 
     return leader
 
-
 def test_generic_put_command_is_committed():
     transport, nodes = create_cluster()
     leader = elect_node1(transport, nodes)
@@ -55,10 +54,10 @@ def test_generic_put_command_is_committed():
     )
 
     assert committed is True
+
     assert leader.store.get("language") == "python"
     assert nodes["node-2"].store.get("language") == "python"
     assert nodes["node-3"].store.get("language") == "python"
-
 
 def test_delete_is_replicated_and_committed():
     transport, nodes = create_cluster()
@@ -70,28 +69,30 @@ def test_delete_is_replicated_and_committed():
         transport,
     )
 
+    assert leader.store.get("language") == "python"
+
     committed = leader.delete(
         "language",
         transport,
     )
 
     assert committed is True
+
     assert leader.store.get("language") is None
     assert nodes["node-2"].store.get("language") is None
     assert nodes["node-3"].store.get("language") is None
-
 
 def test_delete_is_recorded_in_raft_log():
     transport, nodes = create_cluster()
     leader = elect_node1(transport, nodes)
 
-    assert leader.put(
+    leader.put(
         "x",
         "10",
         transport,
     )
 
-    assert leader.delete(
+    leader.delete(
         "x",
         transport,
     )
@@ -102,12 +103,11 @@ def test_delete_is_recorded_in_raft_log():
     assert entry.command.operation == "DELETE"
     assert entry.command.key == "x"
 
-
 def test_delete_commits_with_one_unreachable_follower():
     transport, nodes = create_cluster()
     leader = elect_node1(transport, nodes)
 
-    assert leader.put(
+    leader.put(
         "name",
         "harsha",
         transport,
@@ -121,15 +121,15 @@ def test_delete_commits_with_one_unreachable_follower():
     )
 
     assert committed is True
+
     assert leader.store.get("name") is None
     assert nodes["node-2"].store.get("name") is None
-
 
 def test_delete_does_not_apply_without_quorum():
     transport, nodes = create_cluster()
     leader = elect_node1(transport, nodes)
 
-    assert leader.put(
+    leader.put(
         "safe",
         "value",
         transport,
@@ -144,8 +144,8 @@ def test_delete_does_not_apply_without_quorum():
     )
 
     assert committed is False
-    assert leader.store.get("safe") == "value"
 
+    assert leader.store.get("safe") == "value"
 
 def test_follower_rejects_delete():
     transport, nodes = create_cluster()
@@ -157,7 +157,6 @@ def test_follower_rejects_delete():
             "x",
             transport,
         )
-
 
 def test_invalid_command_is_rejected_before_append():
     transport, nodes = create_cluster()
