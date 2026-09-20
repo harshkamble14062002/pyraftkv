@@ -248,10 +248,9 @@ class RaftNode:
                     follower_id,
                 )
 
-    def put(
+    def submit_command(
         self,
-        key: str,
-        value: str,
+        command: RaftCommand,
         transport: RaftTransport,
     ) -> bool:
         if self.state.role != NodeRole.LEADER:
@@ -259,17 +258,22 @@ class RaftNode:
                 f"Node {self.node_id} is not the leader"
             )
 
+        if command.operation not in {"PUT", "DELETE"}:
+            raise ValueError(
+                f"Unsupported command: {command.operation}"
+            )
+
+        if command.operation == "PUT" and command.value is None:
+            raise ValueError(
+                "PUT command requires a value"
+            )
+
         entry = self.log.append(
             term=self.state.current_term,
-            command=RaftCommand(
-                operation="PUT",
-                key=key,
-                value=value,
-            ),
+            command=command,
         )
 
         self._initialize_leader_replication()
-
         self.replicate_log(transport)
 
         if self.state.role != NodeRole.LEADER:
@@ -289,8 +293,34 @@ class RaftNode:
             self.store,
         )
 
-        # Followers received the entry before the leader knew it was committed.
-        # Send the updated leader_commit so they can apply it too.
         self.send_heartbeats(transport)
 
         return True
+
+    def put(
+        self,
+        key: str,
+        value: str,
+        transport: RaftTransport,
+    ) -> bool:
+        return self.submit_command(
+            RaftCommand(
+                operation="PUT",
+                key=key,
+                value=value,
+            ),
+            transport,
+        )
+
+    def delete(
+        self,
+        key: str,
+        transport: RaftTransport,
+    ) -> bool:
+        return self.submit_command(
+            RaftCommand(
+                operation="DELETE",
+                key=key,
+            ),
+            transport,
+        )
