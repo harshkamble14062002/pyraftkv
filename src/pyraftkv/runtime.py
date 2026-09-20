@@ -1,4 +1,6 @@
 import argparse
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -7,7 +9,10 @@ from fastapi import FastAPI
 
 from pyraftkv.api.raft import create_raft_router
 from pyraftkv.raft.node import RaftNode
+from pyraftkv.raft.state import NodeRole
 from pyraftkv.transport.http import HTTPTransport
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,16 +66,71 @@ def create_runtime(
     )
 
 
+def run_raft_iteration(
+    runtime: NodeRuntime,
+) -> None:
+    node = runtime.node
+
+    previous_role = node.state.role
+    previous_term = node.state.current_term
+
+    if node.state.role == NodeRole.LEADER:
+        node.send_heartbeats(runtime.transport)
+    else:
+        node.tick(runtime.transport)
+
+    if node.state.role != previous_role or node.state.current_term != previous_term:
+        logger.info(
+            "Raft state changed: node=%s role=%s term=%s leader=%s",
+            node.node_id,
+            node.state.role.value,
+            node.state.current_term,
+            node.state.leader_id,
+        )
+
+
+async def raft_background_loop(
+    runtime: NodeRuntime,
+    interval: float = 0.05,
+) -> None:
+    while True:
+        try:
+            await asyncio.to_thread(
+                run_raft_iteration,
+                runtime,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Raft background iteration failed")
+
+        await asyncio.sleep(interval)
+
+
 def create_node_app(
     runtime: NodeRuntime,
 ) -> FastAPI:
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(
+        app: FastAPI,
+    ):
         app.state.runtime = runtime
 
-        yield
+        raft_task = asyncio.create_task(raft_background_loop(runtime))
 
-        runtime.transport.close()
+        app.state.raft_task = raft_task
+
+        try:
+            yield
+        finally:
+            raft_task.cancel()
+
+            try:
+                await raft_task
+            except asyncio.CancelledError:
+                pass
+
+            runtime.transport.close()
 
     app = FastAPI(
         title="PyRaftKV",
