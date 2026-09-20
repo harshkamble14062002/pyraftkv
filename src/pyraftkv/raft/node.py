@@ -187,7 +187,6 @@ class RaftNode:
                 self.state.become_follower(
                     term=response.term,
                 )
-
                 self.replication = None
                 results[follower_id] = False
                 break
@@ -197,13 +196,11 @@ class RaftNode:
                     follower_id,
                     request,
                 )
-
                 results[follower_id] = True
             else:
                 self.replication.record_failure(
                     follower_id,
                 )
-
                 results[follower_id] = False
 
         return results
@@ -244,9 +241,12 @@ class RaftNode:
                 )
                 return True
 
-    def submit_command(
+            self.replication.record_failure(follower_id)
+
+        return False
+
+    def replicate_log(
         self,
-        command: RaftCommand,
         transport: RaftTransport,
     ) -> None:
         if self.state.role != NodeRole.LEADER:
@@ -263,15 +263,22 @@ class RaftNode:
                 transport,
             )
 
+            if self.state.role != NodeRole.LEADER:
+                return
+
+    def submit_command(
+        self,
+        command: RaftCommand,
+        transport: RaftTransport,
+    ) -> bool:
+        if self.state.role != NodeRole.LEADER:
+            raise NotLeaderError(f"Node {self.node_id} is not the leader")
+
         if command.operation not in {"PUT", "DELETE"}:
-            raise ValueError(
-                f"Unsupported command: {command.operation}"
-            )
+            raise ValueError(f"Unsupported command: {command.operation}")
 
         if command.operation == "PUT" and command.value is None:
-            raise ValueError(
-                "PUT command requires a value"
-            )
+            raise ValueError("PUT command requires a value")
 
         entry = self.log.append(
             term=self.state.current_term,
@@ -298,6 +305,8 @@ class RaftNode:
             self.store,
         )
 
+        # Send the updated leader_commit to followers
+        # so they can apply committed entries.
         self.send_heartbeats(transport)
 
         return True
