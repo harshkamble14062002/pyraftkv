@@ -4,7 +4,6 @@ from pyraftkv.raft.state import NodeRole, RaftState
 
 
 class LeaderReplication:
-    
     def __init__(
         self,
         state: RaftState,
@@ -22,19 +21,12 @@ class LeaderReplication:
 
         self.members = set(members)
 
-        self.followers = self.members - {
-            state.node_id
-        }
+        self.followers = self.members - {state.node_id}
 
-        self.next_index = {
-            follower: log.last_index + 1
-            for follower in self.followers
-        }
+        self.next_index = {follower: log.last_index + 1 for follower in self.followers}
 
-        self.match_index = {
-            follower: 0
-            for follower in self.followers
-        }
+        self.match_index = {follower: 0 for follower in self.followers}
+
     def build_request(
         self,
         follower: str,

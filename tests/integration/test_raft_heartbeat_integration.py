@@ -14,15 +14,13 @@ MEMBERS = {
 def create_cluster():
     transport = InMemoryTransport()
 
-    nodes = {
-        node_id: RaftNode(node_id, MEMBERS)
-        for node_id in MEMBERS
-    }
+    nodes = {node_id: RaftNode(node_id, MEMBERS) for node_id in MEMBERS}
 
     for node_id, node in nodes.items():
         transport.register(node_id, node)
 
     return transport, nodes
+
 
 def test_leader_sends_heartbeat_to_followers():
     transport, nodes = create_cluster()
@@ -46,6 +44,7 @@ def test_leader_sends_heartbeat_to_followers():
     assert nodes["node-2"].state.leader_id == "node-1"
     assert nodes["node-3"].state.leader_id == "node-1"
 
+
 def test_unreachable_follower_does_not_crash_leader():
     transport, nodes = create_cluster()
 
@@ -65,6 +64,7 @@ def test_unreachable_follower_does_not_crash_leader():
 
     assert leader.state.role == NodeRole.LEADER
 
+
 def test_leader_steps_down_on_higher_term_response():
     transport, nodes = create_cluster()
 
@@ -77,9 +77,7 @@ def test_leader_steps_down_on_higher_term_response():
 
     assert leader.state.role == NodeRole.LEADER
 
-    nodes["node-2"].state.current_term = (
-        leader.state.current_term + 1
-    )
+    nodes["node-2"].state.current_term = leader.state.current_term + 1
 
     leader.send_heartbeats(transport)
 

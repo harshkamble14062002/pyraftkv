@@ -36,6 +36,7 @@ def test_node_must_be_cluster_member():
             MEMBERS,
         )
 
+
 def test_node_handles_request_vote():
     node = RaftNode(
         "node-2",
@@ -51,15 +52,14 @@ def test_node_handles_request_vote():
         last_log_term=0,
     )
 
-    response = node.handle_request_vote(
-        request
-    )
+    response = node.handle_request_vote(request)
 
     assert response.vote_granted is True
     assert node.state.voted_for == "node-1"
     assert node.state.current_term == 1
 
     node.timer.reset.assert_called_once()
+
 
 def test_node_handles_heartbeat():
     node = RaftNode(
@@ -75,9 +75,7 @@ def test_node_handles_heartbeat():
         leader_commit=0,
     )
 
-    response = node.handle_append_entries(
-        request
-    )
+    response = node.handle_append_entries(request)
 
     assert response.success is True
 
@@ -85,6 +83,7 @@ def test_node_handles_heartbeat():
     assert node.state.leader_id == "node-1"
 
     node.timer.reset.assert_called_once()
+
 
 def test_old_leader_is_rejected():
     node = RaftNode(
@@ -100,14 +99,13 @@ def test_old_leader_is_rejected():
         leader_id="node-1",
     )
 
-    response = node.handle_append_entries(
-        request
-    )
+    response = node.handle_append_entries(request)
 
     assert response.success is False
     assert node.state.current_term == 5
 
     node.timer.reset.assert_not_called()
+
 
 def test_two_nodes_exchange_request_vote():
     transport = InMemoryTransport()

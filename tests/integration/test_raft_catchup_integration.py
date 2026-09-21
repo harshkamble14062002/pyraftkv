@@ -11,6 +11,7 @@ MEMBERS = {
     "node-3",
 }
 
+
 def entry(
     index: int,
     term: int,
@@ -26,13 +27,11 @@ def entry(
         ),
     )
 
+
 def create_cluster():
     transport = InMemoryTransport()
 
-    nodes = {
-        node_id: RaftNode(node_id, MEMBERS)
-        for node_id in MEMBERS
-    }
+    nodes = {node_id: RaftNode(node_id, MEMBERS) for node_id in MEMBERS}
 
     for node_id, node in nodes.items():
         transport.register(node_id, node)
@@ -51,6 +50,7 @@ def elect_node1(transport, nodes):
     assert leader.state.role == NodeRole.LEADER
 
     return leader
+
 
 def test_lagging_follower_catches_up():
     transport, nodes = create_cluster()
@@ -107,10 +107,8 @@ def test_lagging_follower_catches_up():
     assert follower.log.get(2) == leader.log.get(2)
     assert follower.log.get(3) == leader.log.get(3)
 
-    assert (
-        leader.replication.next_index["node-3"]
-        == 4
-    )
+    assert leader.replication.next_index["node-3"] == 4
+
 
 def test_divergent_follower_suffix_is_replaced():
     transport, nodes = create_cluster()
@@ -167,6 +165,7 @@ def test_divergent_follower_suffix_is_replaced():
     leader_entry = leader.log.get(2)
 
     assert follower_entry == leader_entry
+
 
 def test_unreachable_follower_stops_retrying():
     transport, nodes = create_cluster()

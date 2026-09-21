@@ -12,12 +12,9 @@ class RaftRPCHandler(Protocol):
     def handle_request_vote(
         self,
         request: RequestVoteRequest,
-    ) -> RequestVoteResponse:
-        ...
+    ) -> RequestVoteResponse: ...
 
     def handle_append_entries(
         self,
         request: AppendEntriesRequest,
-    ) -> AppendEntriesResponse:
-        ...
-
+    ) -> AppendEntriesResponse: ...
