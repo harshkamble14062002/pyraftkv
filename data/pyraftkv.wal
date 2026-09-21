@@ -1,1 +1,2 @@
 {"operation": "PUT", "key": "name", "value": "harsha"}
+{"operation": "PUT", "key": "persistent", "value": "survives-restart"}

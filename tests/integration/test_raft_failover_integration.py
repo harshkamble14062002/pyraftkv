@@ -42,6 +42,7 @@ def elect(
 
     assert node.state.role == NodeRole.LEADER
 
+
 def test_new_leader_accepts_write_after_failover():
     transport, nodes = create_cluster()
 
@@ -72,6 +73,7 @@ def test_new_leader_accepts_write_after_failover():
 
     assert nodes["node-3"].store.get("before") == "failure"
     assert nodes["node-3"].store.get("after") == "failover"
+
 
 def test_restarted_node_catches_up_from_new_leader():
     transport, nodes = create_cluster()
@@ -111,40 +113,24 @@ def test_restarted_node_catches_up_from_new_leader():
         MEMBERS,
     )
 
-    transport.unregister(
-        "node-1"
-    )
+    transport.unregister("node-1")
 
     transport.register(
         "node-1",
         restarted,
     )
 
-    transport.unblock(
-        "node-1"
-    )
+    transport.unblock("node-1")
 
     # Periodic leader replication should repair it.
-    new_leader.replicate_log(
-        transport
-    )
+    new_leader.replicate_log(transport)
 
     assert restarted.state.role == NodeRole.FOLLOWER
 
-    assert (
-        restarted.state.current_term
-        == new_leader.state.current_term
-    )
+    assert restarted.state.current_term == new_leader.state.current_term
 
-    assert (
-        restarted.log.last_index
-        == new_leader.log.last_index
-    )
+    assert restarted.log.last_index == new_leader.log.last_index
 
-    assert restarted.store.get(
-        "before"
-    ) == "failure"
+    assert restarted.store.get("before") == "failure"
 
-    assert restarted.store.get(
-        "after"
-    ) == "failover"
+    assert restarted.store.get("after") == "failover"

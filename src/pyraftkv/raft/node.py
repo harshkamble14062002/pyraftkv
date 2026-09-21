@@ -1,7 +1,10 @@
+from pathlib import Path
+
 from pyraftkv.raft.election import ElectionTracker
 from pyraftkv.raft.election_trigger import start_election_if_needed
 from pyraftkv.raft.leader import LeaderReplication
 from pyraftkv.raft.log import RaftCommand, RaftLog
+from pyraftkv.raft.persistence import RaftPersistence
 from pyraftkv.raft.replication import handle_append_entries
 from pyraftkv.raft.rpc import (
     AppendEntriesRequest,
@@ -26,6 +29,7 @@ class RaftNode:
         self,
         node_id: str,
         members: set[str],
+        data_dir: str | Path | None = None,
     ) -> None:
         if node_id not in members:
             raise ValueError("node_id must be a cluster member")
@@ -33,13 +37,43 @@ class RaftNode:
         self.node_id = node_id
         self.members = set(members)
 
-        self.state = RaftState(
-            node_id=node_id,
-        )
+        self.persistence = RaftPersistence(data_dir) if data_dir is not None else None
 
-        self.log = RaftLog()
+        # Load persisted Raft state and log when persistence
+        # is enabled. Otherwise start with fresh state.
+        if self.persistence is None:
+            self.state = RaftState(
+                node_id=node_id,
+            )
+            self.log = RaftLog()
+        else:
+            self.state = self.persistence.load_state(node_id)
+            self.log = self.persistence.load_log()
+
+        # A persisted commit index must never point beyond
+        # the available Raft log.
+        if self.state.commit_index > self.log.last_index:
+            raise RuntimeError("Persisted commit index exceeds Raft log")
+
+        # KVStore is runtime state. Rebuild it by replaying
+        # the committed portion of the Raft log.
         self.store = KVStore()
 
+        self.state.last_applied = 0
+
+        if self.state.commit_index > 0:
+            apply_committed_entries(
+                self.state,
+                self.log,
+                self.store,
+            )
+
+        # Runtime leadership state is not restored.
+        # A restarted node always rejoins as a follower.
+        self.state.role = NodeRole.FOLLOWER
+        self.state.leader_id = None
+
+        # Runtime-only components are recreated on startup.
         self.timer = ElectionTimer()
 
         self.election = ElectionTracker(
@@ -48,6 +82,18 @@ class RaftNode:
         )
 
         self.replication: LeaderReplication | None = None
+
+    def _persist_state(self) -> None:
+        if self.persistence is None:
+            return
+
+        self.persistence.save_state(self.state)
+
+    def _persist_log(self) -> None:
+        if self.persistence is None:
+            return
+
+        self.persistence.save_log(self.log)
 
     def handle_request_vote(
         self,
@@ -59,6 +105,10 @@ class RaftNode:
             local_last_index=self.log.last_index,
             local_last_term=self.log.last_term,
         )
+
+        # Persist current_term and voted_for before
+        # responding to the candidate.
+        self._persist_state()
 
         if response.vote_granted:
             self.timer.reset()
@@ -72,12 +122,35 @@ class RaftNode:
         self,
         request: AppendEntriesRequest,
     ) -> AppendEntriesResponse:
+        before_entries = tuple(self.log.entries_from(1))
+
+        before_state = (
+            self.state.current_term,
+            self.state.voted_for,
+            self.state.commit_index,
+        )
+
         response = handle_append_entries(
             state=self.state,
             log=self.log,
             request=request,
             store=self.store,
         )
+
+        after_entries = tuple(self.log.entries_from(1))
+
+        after_state = (
+            self.state.current_term,
+            self.state.voted_for,
+            self.state.commit_index,
+        )
+
+        # Do not rewrite the log for empty heartbeats.
+        if after_entries != before_entries:
+            self._persist_log()
+
+        if after_state != before_state:
+            self._persist_state()
 
         if response.success:
             self.timer.reset()
@@ -91,6 +164,9 @@ class RaftNode:
         self,
         transport: RaftTransport,
     ) -> NodeRole:
+        previous_term = self.state.current_term
+        previous_vote = self.state.voted_for
+
         requests = start_election_if_needed(
             self.state,
             self.timer,
@@ -98,6 +174,14 @@ class RaftNode:
             local_last_index=self.log.last_index,
             local_last_term=self.log.last_term,
         )
+
+        # Starting an election changes current_term and
+        # normally voted_for as well. Persist before sending RPCs.
+        if (
+            self.state.current_term != previous_term
+            or self.state.voted_for != previous_vote
+        ):
+            self._persist_state()
 
         # Important for a single-node cluster.
         if self.state.role == NodeRole.LEADER:
@@ -115,10 +199,21 @@ class RaftNode:
             except TransportError:
                 continue
 
+            before_term = self.state.current_term
+            before_vote = self.state.voted_for
+
             self.election.record_vote(
                 peer_id,
                 response,
             )
+
+            # A higher-term response can force the
+            # candidate back to follower.
+            if (
+                self.state.current_term != before_term
+                or self.state.voted_for != before_vote
+            ):
+                self._persist_state()
 
             if self.state.role == NodeRole.LEADER:
                 self._initialize_leader_replication()
@@ -187,6 +282,10 @@ class RaftNode:
                 self.state.become_follower(
                     term=response.term,
                 )
+
+                # current_term changed and must be durable.
+                self._persist_state()
+
                 self.replication = None
                 results[follower_id] = False
                 break
@@ -231,6 +330,10 @@ class RaftNode:
                 self.state.become_follower(
                     term=response.term,
                 )
+
+                # Persist the higher term before returning.
+                self._persist_state()
+
                 self.replication = None
                 return False
 
@@ -241,6 +344,8 @@ class RaftNode:
                 )
                 return True
 
+            # Backtrack next_index and retry until the
+            # follower finds a matching prefix.
             self.replication.record_failure(follower_id)
 
         return False
@@ -266,6 +371,20 @@ class RaftNode:
             if self.state.role != NodeRole.LEADER:
                 return
 
+        previous_commit_index = self.state.commit_index
+
+        self.replication.advance_commit_index()
+
+        if self.state.commit_index != previous_commit_index:
+            # commit_index is durable Raft state.
+            self._persist_state()
+
+            apply_committed_entries(
+                self.state,
+                self.log,
+                self.store,
+            )
+
     def submit_command(
         self,
         command: RaftCommand,
@@ -285,7 +404,11 @@ class RaftNode:
             command=command,
         )
 
+        # Persist locally before sending the entry to followers.
+        self._persist_log()
+
         self._initialize_leader_replication()
+
         self.replicate_log(transport)
 
         if self.state.role != NodeRole.LEADER:
@@ -294,19 +417,12 @@ class RaftNode:
         if self.replication is None:
             return False
 
-        self.replication.advance_commit_index()
-
+        # replicate_log() already advances commit_index,
+        # persists it, and applies committed entries.
         if self.state.commit_index < entry.index:
             return False
 
-        apply_committed_entries(
-            self.state,
-            self.log,
-            self.store,
-        )
-
-        # Send the updated leader_commit to followers
-        # so they can apply committed entries.
+        # Propagate the new leader_commit to followers.
         self.send_heartbeats(transport)
 
         return True
