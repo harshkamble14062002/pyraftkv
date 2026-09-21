@@ -43,25 +43,6 @@ def test_candidate_iteration_checks_election():
     node.tick.assert_called_once_with(transport)
 
 
-def test_leader_iteration_sends_heartbeats():
-    node = Mock()
-    transport = Mock()
-
-    node.state.role = NodeRole.LEADER
-    node.state.current_term = 3
-
-    runtime = NodeRuntime(
-        node=node,
-        transport=transport,
-    )
-
-    run_raft_iteration(runtime)
-
-    node.send_heartbeats.assert_called_once_with(transport)
-
-    node.tick.assert_not_called()
-
-
 import asyncio
 
 import pytest
@@ -97,3 +78,24 @@ async def test_background_loop_can_be_cancelled():
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def test_leader_iteration_replicates_log():
+    node = Mock()
+    transport = Mock()
+
+    node.state.role = NodeRole.LEADER
+    node.state.current_term = 3
+    node.state.leader_id = "node-1"
+    node.node_id = "node-1"
+
+    runtime = NodeRuntime(
+        node=node,
+        transport=transport,
+    )
+
+    run_raft_iteration(runtime)
+
+    node.replicate_log.assert_called_once_with(transport)
+
+    node.tick.assert_not_called()

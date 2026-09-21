@@ -3,6 +3,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -45,6 +46,7 @@ def parse_peer(value: str) -> tuple[str, str]:
 def create_runtime(
     node_id: str,
     peers: dict[str, str],
+    data_dir: str | Path | None = None,
 ) -> NodeRuntime:
     if node_id in peers:
         raise ValueError("Local node must not be listed as its own peer")
@@ -54,9 +56,13 @@ def create_runtime(
         *peers.keys(),
     }
 
+    if data_dir is None:
+        data_dir = Path("data") / node_id
+
     node = RaftNode(
         node_id=node_id,
         members=members,
+        data_dir=data_dir,
     )
 
     transport = HTTPTransport(peers)
@@ -76,7 +82,7 @@ def run_raft_iteration(
     previous_term = node.state.current_term
 
     if node.state.role == NodeRole.LEADER:
-        node.send_heartbeats(runtime.transport)
+        node.replicate_log(runtime.transport)
     else:
         node.tick(runtime.transport)
 
@@ -191,6 +197,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NODE_ID=URL",
     )
 
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Directory for persistent Raft state",
+    )
+
     return parser
 
 
@@ -212,6 +224,7 @@ def main() -> None:
     runtime = create_runtime(
         node_id=args.node_id,
         peers=peers,
+        data_dir=args.data_dir,
     )
 
     app = create_node_app(runtime)
