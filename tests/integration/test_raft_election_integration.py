@@ -14,15 +14,13 @@ MEMBERS = {
 def create_cluster():
     transport = InMemoryTransport()
 
-    nodes = {
-        node_id: RaftNode(node_id, MEMBERS)
-        for node_id in MEMBERS
-    }
+    nodes = {node_id: RaftNode(node_id, MEMBERS) for node_id in MEMBERS}
 
     for node_id, node in nodes.items():
         transport.register(node_id, node)
 
     return transport, nodes
+
 
 def test_three_node_cluster_elects_leader():
     transport, nodes = create_cluster()
@@ -53,6 +51,7 @@ def test_election_succeeds_with_one_unreachable_follower():
 
     assert role == NodeRole.LEADER
 
+
 def test_election_fails_without_quorum():
     transport, nodes = create_cluster()
 
@@ -69,6 +68,7 @@ def test_election_fails_without_quorum():
     assert role == NodeRole.CANDIDATE
     assert node1.state.role == NodeRole.CANDIDATE
 
+
 def test_no_election_before_timeout():
     transport, nodes = create_cluster()
 
@@ -81,4 +81,3 @@ def test_no_election_before_timeout():
 
     assert role == NodeRole.FOLLOWER
     assert node1.state.current_term == 0
-    

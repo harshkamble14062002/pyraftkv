@@ -16,10 +16,7 @@ MEMBERS = {
 def create_cluster():
     transport = InMemoryTransport()
 
-    nodes = {
-        node_id: RaftNode(node_id, MEMBERS)
-        for node_id in MEMBERS
-    }
+    nodes = {node_id: RaftNode(node_id, MEMBERS) for node_id in MEMBERS}
 
     for node_id, node in nodes.items():
         transport.register(node_id, node)
@@ -38,6 +35,7 @@ def elect_node1(transport, nodes):
     assert leader.state.role == NodeRole.LEADER
 
     return leader
+
 
 def test_follower_rejects_client_put():
     transport, nodes = create_cluster()

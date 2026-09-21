@@ -17,13 +17,10 @@ class RaftTransport(Protocol):
         self,
         target_id: str,
         request: RequestVoteRequest,
-    ) -> RequestVoteResponse:
-        ...
+    ) -> RequestVoteResponse: ...
 
     def append_entries(
         self,
         target_id: str,
         request: AppendEntriesRequest,
-    ) -> AppendEntriesResponse:
-        ...
-
+    ) -> AppendEntriesResponse: ...

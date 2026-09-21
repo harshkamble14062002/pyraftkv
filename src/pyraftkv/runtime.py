@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import uvicorn
 from fastapi import FastAPI
 
+from pyraftkv.api.cluster import create_cluster_router
 from pyraftkv.api.raft import create_raft_router
 from pyraftkv.raft.node import RaftNode
 from pyraftkv.raft.state import NodeRole
@@ -138,6 +139,13 @@ def create_node_app(
     )
 
     app.include_router(create_raft_router(runtime.node))
+
+    app.include_router(
+        create_cluster_router(
+            runtime.node,
+            runtime.transport,
+        )
+    )
 
     @app.get("/health")
     def health() -> dict[str, object]:

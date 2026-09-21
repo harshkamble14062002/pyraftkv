@@ -34,16 +34,12 @@ class InMemoryTransport:
         target_id: str,
     ) -> RaftRPCHandler:
         if target_id in self._blocked:
-            raise TransportError(
-                f"Node {target_id} is unreachable"
-            )
+            raise TransportError(f"Node {target_id} is unreachable")
 
         node = self._nodes.get(target_id)
 
         if node is None:
-            raise TransportError(
-                f"Unknown node: {target_id}"
-            )
+            raise TransportError(f"Unknown node: {target_id}")
 
         return node
 
@@ -64,4 +60,3 @@ class InMemoryTransport:
         node = self._get_node(target_id)
 
         return node.handle_append_entries(request)
-

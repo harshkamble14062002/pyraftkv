@@ -15,11 +15,9 @@ from pyraftkv.transport.memory import InMemoryTransport
 def test_request_vote_is_forwarded():
     handler = Mock()
 
-    handler.handle_request_vote.return_value = (
-        RequestVoteResponse(
-            term=2,
-            vote_granted=True,
-        )
+    handler.handle_request_vote.return_value = RequestVoteResponse(
+        term=2,
+        vote_granted=True,
     )
 
     transport = InMemoryTransport()
@@ -43,18 +41,15 @@ def test_request_vote_is_forwarded():
 
     assert response.vote_granted is True
 
-    handler.handle_request_vote.assert_called_once_with(
-        request
-    )
+    handler.handle_request_vote.assert_called_once_with(request)
+
 
 def test_append_entries_is_forwarded():
     handler = Mock()
 
-    handler.handle_append_entries.return_value = (
-        AppendEntriesResponse(
-            term=2,
-            success=True,
-        )
+    handler.handle_append_entries.return_value = AppendEntriesResponse(
+        term=2,
+        success=True,
     )
 
     transport = InMemoryTransport()
@@ -75,6 +70,7 @@ def test_append_entries_is_forwarded():
     )
 
     assert response.success is True
+
 
 def test_blocked_node_is_unreachable():
     handler = Mock()
@@ -105,11 +101,9 @@ def test_blocked_node_is_unreachable():
 def test_node_can_be_unblocked():
     handler = Mock()
 
-    handler.handle_request_vote.return_value = (
-        RequestVoteResponse(
-            term=1,
-            vote_granted=True,
-        )
+    handler.handle_request_vote.return_value = RequestVoteResponse(
+        term=1,
+        vote_granted=True,
     )
 
     transport = InMemoryTransport()

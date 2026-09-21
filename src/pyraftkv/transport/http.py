@@ -23,15 +23,12 @@ class HTTPTransport:
         client: httpx.Client | None = None,
     ) -> None:
         self._addresses = {
-            node_id: address.rstrip("/")
-            for node_id, address in addresses.items()
+            node_id: address.rstrip("/") for node_id, address in addresses.items()
         }
 
         self._timeout = timeout
 
-        self._client = client or httpx.Client(
-            timeout=timeout
-        )
+        self._client = client or httpx.Client(timeout=timeout)
 
         self._owns_client = client is None
 
@@ -43,9 +40,7 @@ class HTTPTransport:
         address = self._addresses.get(target_id)
 
         if address is None:
-            raise TransportError(
-                f"Unknown node: {target_id}"
-            )
+            raise TransportError(f"Unknown node: {target_id}")
 
         return f"{address}{path}"
 
@@ -68,14 +63,10 @@ class HTTPTransport:
             response.raise_for_status()
 
         except httpx.HTTPError as exc:
-            raise TransportError(
-                f"RequestVote to {target_id} failed"
-            ) from exc
+            raise TransportError(f"RequestVote to {target_id} failed") from exc
 
         try:
-            return request_vote_response_from_dict(
-                response.json()
-            )
+            return request_vote_response_from_dict(response.json())
         except (KeyError, TypeError, ValueError) as exc:
             raise TransportError(
                 f"Invalid RequestVote response from {target_id}"
@@ -100,14 +91,10 @@ class HTTPTransport:
             response.raise_for_status()
 
         except httpx.HTTPError as exc:
-            raise TransportError(
-                f"AppendEntries to {target_id} failed"
-            ) from exc
+            raise TransportError(f"AppendEntries to {target_id} failed") from exc
 
         try:
-            return append_entries_response_from_dict(
-                response.json()
-            )
+            return append_entries_response_from_dict(response.json())
         except (KeyError, TypeError, ValueError) as exc:
             raise TransportError(
                 f"Invalid AppendEntries response from {target_id}"

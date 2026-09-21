@@ -24,43 +24,31 @@ def create_raft_router(
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         try:
-            request = request_vote_from_dict(
-                payload
-            )
+            request = request_vote_from_dict(payload)
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=400,
                 detail="Invalid RequestVote payload",
             ) from exc
 
-        response = node.handle_request_vote(
-            request
-        )
+        response = node.handle_request_vote(request)
 
-        return request_vote_response_to_dict(
-            response
-        )
+        return request_vote_response_to_dict(response)
 
     @router.post("/append-entries")
     def append_entries(
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         try:
-            request = append_entries_from_dict(
-                payload
-            )
+            request = append_entries_from_dict(payload)
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=400,
                 detail="Invalid AppendEntries payload",
             ) from exc
 
-        response = node.handle_append_entries(
-            request
-        )
+        response = node.handle_append_entries(request)
 
-        return append_entries_response_to_dict(
-            response
-        )
+        return append_entries_response_to_dict(response)
 
     return router

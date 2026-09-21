@@ -102,10 +102,7 @@ def append_entries_to_dict(
         "leader_id": request.leader_id,
         "prev_log_index": request.prev_log_index,
         "prev_log_term": request.prev_log_term,
-        "entries": [
-            log_entry_to_dict(entry)
-            for entry in request.entries
-        ],
+        "entries": [log_entry_to_dict(entry) for entry in request.entries],
         "leader_commit": request.leader_commit,
     }
 
@@ -118,10 +115,7 @@ def append_entries_from_dict(
         leader_id=str(data["leader_id"]),
         prev_log_index=int(data["prev_log_index"]),
         prev_log_term=int(data["prev_log_term"]),
-        entries=tuple(
-            log_entry_from_dict(entry)
-            for entry in data.get("entries", [])
-        ),
+        entries=tuple(log_entry_from_dict(entry) for entry in data.get("entries", [])),
         leader_commit=int(data["leader_commit"]),
     )
 
