@@ -1,15 +1,18 @@
 import argparse
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST
 
 from pyraftkv.api.cluster import create_cluster_router
 from pyraftkv.api.raft import create_raft_router
+from pyraftkv.observability.metrics import RaftMetrics
 from pyraftkv.raft.node import RaftNode
 from pyraftkv.raft.state import NodeRole
 from pyraftkv.transport.http import HTTPTransport
@@ -21,19 +24,24 @@ logger = logging.getLogger(__name__)
 class NodeRuntime:
     node: RaftNode
     transport: HTTPTransport
+    metrics: RaftMetrics | None = None
 
 
 def parse_peer(value: str) -> tuple[str, str]:
     try:
         node_id, address = value.split("=", 1)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("Peer must use NODE_ID=URL format") from exc
+        raise argparse.ArgumentTypeError(
+            "Peer must use NODE_ID=URL format"
+        ) from exc
 
     node_id = node_id.strip()
     address = address.strip().rstrip("/")
 
     if not node_id:
-        raise argparse.ArgumentTypeError("Peer node ID cannot be empty")
+        raise argparse.ArgumentTypeError(
+            "Peer node ID cannot be empty"
+        )
 
     if not address.startswith(("http://", "https://")):
         raise argparse.ArgumentTypeError(
@@ -49,7 +57,9 @@ def create_runtime(
     data_dir: str | Path | None = None,
 ) -> NodeRuntime:
     if node_id in peers:
-        raise ValueError("Local node must not be listed as its own peer")
+        raise ValueError(
+            "Local node must not be listed as its own peer"
+        )
 
     members = {
         node_id,
@@ -67,9 +77,16 @@ def create_runtime(
 
     transport = HTTPTransport(peers)
 
+    metrics = RaftMetrics(
+        node_id=node_id,
+    )
+
+    metrics.update_from_node(node)
+
     return NodeRuntime(
         node=node,
         transport=transport,
+        metrics=metrics,
     )
 
 
@@ -86,7 +103,10 @@ def run_raft_iteration(
     else:
         node.tick(runtime.transport)
 
-    if node.state.role != previous_role or node.state.current_term != previous_term:
+    if (
+        node.state.role != previous_role
+        or node.state.current_term != previous_term
+    ):
         logger.info(
             "Raft state changed: node=%s role=%s term=%s leader=%s",
             node.node_id,
@@ -94,6 +114,9 @@ def run_raft_iteration(
             node.state.current_term,
             node.state.leader_id,
         )
+
+    if runtime.metrics is not None:
+        runtime.metrics.update_from_node(node)
 
 
 async def raft_background_loop(
@@ -109,7 +132,9 @@ async def raft_background_loop(
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Raft background iteration failed")
+            logger.exception(
+                "Raft background iteration failed"
+            )
 
         await asyncio.sleep(interval)
 
@@ -123,7 +148,9 @@ def create_node_app(
     ):
         app.state.runtime = runtime
 
-        raft_task = asyncio.create_task(raft_background_loop(runtime))
+        raft_task = asyncio.create_task(
+            raft_background_loop(runtime)
+        )
 
         app.state.raft_task = raft_task
 
@@ -144,14 +171,56 @@ def create_node_app(
         lifespan=lifespan,
     )
 
-    app.include_router(create_raft_router(runtime.node))
-
-    app.include_router(
-        create_cluster_router(
-            runtime.node,
-            runtime.transport,
+    if runtime.metrics is None:
+        runtime.metrics = RaftMetrics(
+            node_id=runtime.node.node_id,
         )
+
+    runtime.metrics.update_from_node(
+        runtime.node
     )
+
+    @app.middleware("http")
+    async def record_http_metrics(
+        request: Request,
+        call_next,
+    ):
+        start = time.perf_counter()
+
+        response = await call_next(request)
+
+        duration = time.perf_counter() - start
+
+        if runtime.metrics is not None:
+            path = request.url.path
+
+            runtime.metrics.http_requests.labels(
+                node_id=runtime.node.node_id,
+                method=request.method,
+                path=path,
+                status=str(response.status_code),
+            ).inc()
+
+            runtime.metrics.http_latency.labels(
+                node_id=runtime.node.node_id,
+                method=request.method,
+                path=path,
+            ).observe(duration)
+
+        return response
+
+    @app.get("/metrics")
+    def metrics() -> Response:
+        assert runtime.metrics is not None
+
+        runtime.metrics.update_from_node(
+            runtime.node
+        )
+
+        return Response(
+            content=runtime.metrics.render(),
+            media_type=CONTENT_TYPE_LATEST,
+        )
 
     @app.get("/health")
     def health() -> dict[str, object]:
@@ -167,11 +236,24 @@ def create_node_app(
             "last_applied": state.last_applied,
         }
 
+    app.include_router(
+        create_raft_router(runtime.node)
+    )
+
+    app.include_router(
+        create_cluster_router(
+            runtime.node,
+            runtime.transport,
+        )
+    )
+
     return app
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run a PyRaftKV node")
+    parser = argparse.ArgumentParser(
+        description="Run a PyRaftKV node"
+    )
 
     parser.add_argument(
         "--node-id",
@@ -214,12 +296,16 @@ def main() -> None:
 
     for peer_id, address in args.peer:
         if peer_id in peers:
-            parser.error(f"Duplicate peer: {peer_id}")
+            parser.error(
+                f"Duplicate peer: {peer_id}"
+            )
 
         peers[peer_id] = address
 
     if args.node_id in peers:
-        parser.error("Local node cannot also be configured as a peer")
+        parser.error(
+            "Local node cannot also be configured as a peer"
+        )
 
     runtime = create_runtime(
         node_id=args.node_id,

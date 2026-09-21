@@ -77,3 +77,36 @@ def test_health_endpoint():
         assert data["node_id"] == "node-1"
         assert data["role"] == "follower"
         assert data["term"] == 0
+
+def test_metrics_endpoint():
+    runtime = create_runtime(
+        "node-1",
+        {
+            "node-2": "http://127.0.0.1:8002",
+            "node-3": "http://127.0.0.1:8003",
+        },
+    )
+
+    app = create_node_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/metrics"
+        )
+
+    assert response.status_code == 200
+
+    assert (
+        "pyraftkv_raft_current_term"
+        in response.text
+    )
+
+    assert (
+        "pyraftkv_raft_commit_index"
+        in response.text
+    )
+
+    assert (
+        "pyraftkv_http_requests_total"
+        in response.text
+    )
