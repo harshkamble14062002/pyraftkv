@@ -29,3 +29,15 @@ class AppendEntriesRequest:
 class AppendEntriesResponse:
     term: int
     success: bool
+
+
+@dataclass(frozen=True)
+class TimeoutNowRequest:
+    term: int
+    leader_id: str
+
+
+@dataclass(frozen=True)
+class TimeoutNowResponse:
+    term: int
+    accepted: bool

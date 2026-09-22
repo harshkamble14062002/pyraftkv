@@ -6,6 +6,8 @@ from pyraftkv.raft.rpc import (
     AppendEntriesResponse,
     RequestVoteRequest,
     RequestVoteResponse,
+    TimeoutNowRequest,
+    TimeoutNowResponse,
 )
 
 
@@ -135,4 +137,40 @@ def append_entries_response_from_dict(
     return AppendEntriesResponse(
         term=int(data["term"]),
         success=bool(data["success"]),
+    )
+
+
+def timeout_now_to_dict(
+    request: TimeoutNowRequest,
+) -> dict[str, Any]:
+    return {
+        "term": request.term,
+        "leader_id": request.leader_id,
+    }
+
+
+def timeout_now_from_dict(
+    data: dict[str, Any],
+) -> TimeoutNowRequest:
+    return TimeoutNowRequest(
+        term=int(data["term"]),
+        leader_id=str(data["leader_id"]),
+    )
+
+
+def timeout_now_response_to_dict(
+    response: TimeoutNowResponse,
+) -> dict[str, Any]:
+    return {
+        "term": response.term,
+        "accepted": response.accepted,
+    }
+
+
+def timeout_now_response_from_dict(
+    data: dict[str, Any],
+) -> TimeoutNowResponse:
+    return TimeoutNowResponse(
+        term=int(data["term"]),
+        accepted=bool(data["accepted"]),
     )

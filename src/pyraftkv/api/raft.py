@@ -8,6 +8,8 @@ from pyraftkv.transport.serialization import (
     append_entries_response_to_dict,
     request_vote_from_dict,
     request_vote_response_to_dict,
+    timeout_now_from_dict,
+    timeout_now_response_to_dict,
 )
 
 
@@ -50,5 +52,22 @@ def create_raft_router(
         response = node.handle_append_entries(request)
 
         return append_entries_response_to_dict(response)
+
+
+    @router.post("/timeout-now")
+    def timeout_now(
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            request = timeout_now_from_dict(payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid TimeoutNow payload",
+            ) from exc
+
+        response = node.handle_timeout_now(request)
+
+        return timeout_now_response_to_dict(response)
 
     return router

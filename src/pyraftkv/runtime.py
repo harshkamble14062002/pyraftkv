@@ -14,7 +14,7 @@ from pyraftkv.api.cluster import create_cluster_router
 from pyraftkv.api.raft import create_raft_router
 from pyraftkv.observability.metrics import RaftMetrics
 from pyraftkv.raft.command_processor import RaftCommandProcessor
-from pyraftkv.raft.node import RaftNode
+from pyraftkv.raft.node import NotLeaderError, RaftNode
 from pyraftkv.raft.state import NodeRole
 from pyraftkv.transport.http import HTTPTransport
 
@@ -166,17 +166,37 @@ def create_node_app(
         try:
             yield
         finally:
-            raft_task.cancel()
-
             try:
-                await raft_task
-            except asyncio.CancelledError:
-                pass
+                if runtime.command_processor is not None:
+                    runtime.command_processor.stop()
 
-            if runtime.command_processor is not None:
-                runtime.command_processor.stop()
+                if (
+                    runtime.node.state.role
+                    == NodeRole.LEADER
+                ):
+                    try:
+                        transferred = await asyncio.to_thread(
+                            runtime.node.transfer_leadership,
+                            runtime.transport,
+                        )
+                    except NotLeaderError:
+                        transferred = False
 
-            runtime.transport.close()
+                    logger.info(
+                        "Leadership transfer on shutdown: "
+                        "node=%s transferred=%s",
+                        runtime.node.node_id,
+                        transferred,
+                    )
+            finally:
+                raft_task.cancel()
+
+                try:
+                    await raft_task
+                except asyncio.CancelledError:
+                    pass
+
+                runtime.transport.close()
 
     app = FastAPI(
         title="PyRaftKV",

@@ -7,6 +7,8 @@ from pyraftkv.raft.rpc import (
     AppendEntriesResponse,
     RequestVoteRequest,
     RequestVoteResponse,
+    TimeoutNowRequest,
+    TimeoutNowResponse,
 )
 from pyraftkv.transport.base import TransportError
 from pyraftkv.transport.memory import InMemoryTransport
@@ -129,3 +131,25 @@ def test_node_can_be_unblocked():
     )
 
     assert response.vote_granted is True
+
+
+def test_timeout_now_is_forwarded():
+    handler = Mock()
+    handler.handle_timeout_now.return_value = TimeoutNowResponse(
+        term=2,
+        accepted=True,
+    )
+    transport = InMemoryTransport()
+    transport.register("node-2", handler)
+    request = TimeoutNowRequest(
+        term=2,
+        leader_id="node-1",
+    )
+
+    response = transport.timeout_now(
+        "node-2",
+        request,
+    )
+
+    assert response.accepted is True
+    handler.handle_timeout_now.assert_called_once_with(request)

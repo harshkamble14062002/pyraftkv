@@ -5,6 +5,8 @@ from pyraftkv.raft.rpc import (
     AppendEntriesResponse,
     RequestVoteRequest,
     RequestVoteResponse,
+    TimeoutNowRequest,
+    TimeoutNowResponse,
 )
 
 
@@ -24,3 +26,10 @@ class RaftTransport(Protocol):
         target_id: str,
         request: AppendEntriesRequest,
     ) -> AppendEntriesResponse: ...
+
+
+    def timeout_now(
+        self,
+        target_id: str,
+        request: TimeoutNowRequest,
+    ) -> TimeoutNowResponse: ...

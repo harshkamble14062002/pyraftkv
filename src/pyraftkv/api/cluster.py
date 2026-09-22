@@ -9,6 +9,7 @@ from pyraftkv.raft.command_processor import (
 )
 from pyraftkv.raft.log import RaftCommand
 from pyraftkv.raft.node import (
+    LeadershipTransferInProgressError,
     NotLeaderError,
     RaftNode,
     ReadQuorumError,
@@ -55,6 +56,13 @@ def create_cluster_router(
                 status_code=429,
                 detail={
                     "error": "command_queue_full",
+                },
+            ) from exc
+        except LeadershipTransferInProgressError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "leadership_transfer_in_progress",
                 },
             ) from exc
         except NotLeaderError as exc:
@@ -141,6 +149,13 @@ def create_cluster_router(
                 status_code=429,
                 detail={
                     "error": "command_queue_full",
+                },
+            ) from exc
+        except LeadershipTransferInProgressError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "leadership_transfer_in_progress",
                 },
             ) from exc
         except NotLeaderError as exc:

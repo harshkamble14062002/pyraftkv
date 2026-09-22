@@ -3,6 +3,8 @@ from pyraftkv.raft.rpc import (
     AppendEntriesResponse,
     RequestVoteRequest,
     RequestVoteResponse,
+    TimeoutNowRequest,
+    TimeoutNowResponse,
 )
 from pyraftkv.transport.base import TransportError
 from pyraftkv.transport.node import RaftRPCHandler
@@ -60,3 +62,13 @@ class InMemoryTransport:
         node = self._get_node(target_id)
 
         return node.handle_append_entries(request)
+
+
+    def timeout_now(
+        self,
+        target_id: str,
+        request: TimeoutNowRequest,
+    ) -> TimeoutNowResponse:
+        node = self._get_node(target_id)
+
+        return node.handle_timeout_now(request)

@@ -22,6 +22,8 @@ from pyraftkv.raft.rpc import (
     AppendEntriesResponse,
     RequestVoteRequest,
     RequestVoteResponse,
+    TimeoutNowRequest,
+    TimeoutNowResponse,
 )
 from pyraftkv.raft.state import NodeRole, RaftState
 from pyraftkv.raft.state_machine import apply_committed_entries
@@ -33,6 +35,10 @@ from pyraftkv.transport.base import RaftTransport, TransportError
 
 class NotLeaderError(RuntimeError):
     """Raised when a leader-only client operation reaches a non-leader."""
+
+
+class LeadershipTransferInProgressError(RuntimeError):
+    """Raised when a write arrives during leadership transfer."""
 
 
 class ReadQuorumError(RuntimeError):
@@ -118,6 +124,7 @@ class RaftNode:
         self._read_lease_duration = 0.5
         self._last_read_quorum_term: int | None = None
         self._last_read_quorum_time: float | None = None
+        self._leadership_transfer_in_progress = False
 
     def _persist_state(self) -> None:
         if self.persistence is None:
@@ -256,6 +263,42 @@ class RaftNode:
                 self.replication = None
 
             return response
+
+    def handle_timeout_now(
+        self,
+        request: TimeoutNowRequest,
+    ) -> TimeoutNowResponse:
+        with self._raft_lock:
+            if request.term < self.state.current_term:
+                return TimeoutNowResponse(
+                    term=self.state.current_term,
+                    accepted=False,
+                )
+
+            previous_term = self.state.current_term
+
+            if request.term > self.state.current_term:
+                self.state.become_follower(
+                    term=request.term,
+                    leader_id=request.leader_id,
+                )
+
+            accepted = (
+                self.state.role == NodeRole.FOLLOWER
+                and self.state.leader_id == request.leader_id
+            )
+
+            if self.state.current_term != previous_term:
+                self._persist_state()
+
+            if accepted:
+                self.timer.expire_now()
+
+            return TimeoutNowResponse(
+                term=self.state.current_term,
+                accepted=accepted,
+            )
+
 
     def tick(
         self,
@@ -785,6 +828,110 @@ class RaftNode:
 
             return self.store.get(key)
 
+    def transfer_leadership(
+        self,
+        transport: RaftTransport,
+        target_id: str | None = None,
+    ) -> bool:
+        """Transfer leadership to a responding, fully caught-up follower."""
+        with self._replication_lock:
+            with self._raft_lock:
+                if self.state.role != NodeRole.LEADER:
+                    raise NotLeaderError(
+                        f"Node {self.node_id} is not the leader"
+                    )
+
+                self._initialize_leader_replication()
+
+                if self.replication is None:
+                    return False
+
+                if (
+                    target_id is not None
+                    and target_id not in self.replication.followers
+                ):
+                    raise ValueError(
+                        f"Unknown transfer target: {target_id}"
+                    )
+
+                transfer_term = self.state.current_term
+                self._leadership_transfer_in_progress = True
+
+            try:
+                results = self._replicate_followers_concurrently(
+                    transport
+                )
+
+                with self._raft_lock:
+                    if (
+                        self.state.role != NodeRole.LEADER
+                        or self.state.current_term != transfer_term
+                        or self.replication is None
+                    ):
+                        return False
+
+                    eligible = [
+                        follower_id
+                        for follower_id in self.replication.followers
+                        if (
+                            results.get(follower_id) is True
+                            and self.replication.match_index[
+                                follower_id
+                            ]
+                            >= self.log.last_index
+                        )
+                    ]
+
+                    if target_id is None:
+                        if not eligible:
+                            return False
+
+                        selected = min(eligible)
+                    elif target_id in eligible:
+                        selected = target_id
+                    else:
+                        return False
+
+                    request = TimeoutNowRequest(
+                        term=transfer_term,
+                        leader_id=self.node_id,
+                    )
+
+                try:
+                    response = transport.timeout_now(
+                        selected,
+                        request,
+                    )
+                except TransportError:
+                    return False
+
+                with self._raft_lock:
+                    if (
+                        self.state.role != NodeRole.LEADER
+                        or self.state.current_term != transfer_term
+                    ):
+                        return False
+
+                    if response.term > self.state.current_term:
+                        self.state.become_follower(
+                            term=response.term,
+                        )
+                        self._persist_state()
+                        self.replication = None
+                        return False
+
+                    if not response.accepted:
+                        return False
+
+                    self.state.become_follower(
+                        term=transfer_term,
+                    )
+                    self.replication = None
+                    return True
+            finally:
+                with self._raft_lock:
+                    self._leadership_transfer_in_progress = False
+
     def submit_command(
         self,
         command: RaftCommand,
@@ -802,6 +949,11 @@ class RaftNode:
         with self._raft_lock:
             if not commands:
                 return []
+
+            if self._leadership_transfer_in_progress:
+                raise LeadershipTransferInProgressError(
+                    "Leader is transferring leadership"
+                )
 
             if self.state.role != NodeRole.LEADER:
                 raise NotLeaderError(
