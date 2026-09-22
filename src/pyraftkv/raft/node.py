@@ -4,7 +4,7 @@ from threading import RLock
 from pyraftkv.raft.election import ElectionTracker
 from pyraftkv.raft.election_trigger import start_election_if_needed
 from pyraftkv.raft.leader import LeaderReplication
-from pyraftkv.raft.log import RaftCommand, RaftLog
+from pyraftkv.raft.log import LogEntry, RaftCommand, RaftLog
 from pyraftkv.raft.persistence import RaftPersistence
 from pyraftkv.raft.replication import handle_append_entries
 from pyraftkv.raft.rpc import (
@@ -38,7 +38,12 @@ class RaftNode:
         self.node_id = node_id
         self.members = set(members)
         self._raft_lock = RLock()
-        self.persistence = RaftPersistence(data_dir) if data_dir is not None else None
+
+        self.persistence = (
+            RaftPersistence(data_dir)
+            if data_dir is not None
+            else None
+        )
 
         # Load persisted Raft state and log when persistence
         # is enabled. Otherwise start with fresh state.
@@ -48,13 +53,17 @@ class RaftNode:
             )
             self.log = RaftLog()
         else:
-            self.state = self.persistence.load_state(node_id)
+            self.state = self.persistence.load_state(
+                node_id
+            )
             self.log = self.persistence.load_log()
 
         # A persisted commit index must never point beyond
         # the available Raft log.
         if self.state.commit_index > self.log.last_index:
-            raise RuntimeError("Persisted commit index exceeds Raft log")
+            raise RuntimeError(
+                "Persisted commit index exceeds Raft log"
+            )
 
         # KVStore is runtime state. Rebuild it by replaying
         # the committed portion of the Raft log.
@@ -88,13 +97,65 @@ class RaftNode:
         if self.persistence is None:
             return
 
-        self.persistence.save_state(self.state)
+        self.persistence.save_state(
+            self.state
+        )
 
-    def _persist_log(self) -> None:
+    def _persist_log_change(
+        self,
+        before_entries: tuple[LogEntry, ...],
+        after_entries: tuple[LogEntry, ...],
+    ) -> None:
+        """Persist only the part of the Raft log that changed."""
         if self.persistence is None:
             return
 
-        self.persistence.save_log(self.log)
+        if before_entries == after_entries:
+            return
+
+        common_prefix_length = 0
+
+        while (
+            common_prefix_length < len(before_entries)
+            and common_prefix_length < len(after_entries)
+            and before_entries[common_prefix_length]
+            == after_entries[common_prefix_length]
+        ):
+            common_prefix_length += 1
+
+        new_suffix = list(
+            after_entries[
+                common_prefix_length:
+            ]
+        )
+
+        # Normal follower catch-up:
+        #
+        # before: [1, 2]
+        # after:  [1, 2, 3, 4]
+        #
+        # Only append entries 3 and 4.
+        if common_prefix_length == len(
+            before_entries
+        ):
+            self.persistence.append_log_entries(
+                new_suffix
+            )
+            return
+
+        # Conflict repair or suffix truncation:
+        #
+        # before: [1, 2(old), 3(old)]
+        # after:  [1, 2(new), 3(new)]
+        #
+        # Persist:
+        # truncate from 2
+        # append new 2
+        # append new 3
+        self.persistence.replace_log_suffix(
+            common_prefix_length + 1,
+            new_suffix,
+        )
 
     def handle_request_vote(
         self,
@@ -125,7 +186,9 @@ class RaftNode:
         request: AppendEntriesRequest,
     ) -> AppendEntriesResponse:
         with self._raft_lock:
-            before_entries = tuple(self.log.entries_from(1))
+            before_entries = tuple(
+                self.log.entries_from(1)
+            )
 
             before_state = (
                 self.state.current_term,
@@ -140,7 +203,9 @@ class RaftNode:
                 store=self.store,
             )
 
-            after_entries = tuple(self.log.entries_from(1))
+            after_entries = tuple(
+                self.log.entries_from(1)
+            )
 
             after_state = (
                 self.state.current_term,
@@ -148,9 +213,12 @@ class RaftNode:
                 self.state.commit_index,
             )
 
-            # Do not rewrite the log for empty heartbeats.
-            if after_entries != before_entries:
-                self._persist_log()
+            # Persist only the changed portion of the log.
+            # Empty heartbeats produce no log persistence.
+            self._persist_log_change(
+                before_entries,
+                after_entries,
+            )
 
             if after_state != before_state:
                 self._persist_state()
@@ -192,8 +260,12 @@ class RaftNode:
                 self._initialize_leader_replication()
                 return self.state.role
 
-            for peer_id in sorted(requests):
-                request = requests[peer_id]
+            for peer_id in sorted(
+                requests
+            ):
+                request = requests[
+                    peer_id
+                ]
 
                 try:
                     response = transport.request_vote(
@@ -229,7 +301,9 @@ class RaftNode:
 
             return self.state.role
 
-    def _initialize_leader_replication(self) -> None:
+    def _initialize_leader_replication(
+        self,
+    ) -> None:
         if self.state.role != NodeRole.LEADER:
             self.replication = None
             return
@@ -256,14 +330,27 @@ class RaftNode:
 
             results: dict[str, bool] = {}
 
-            for follower_id in sorted(self.replication.followers):
-                next_index = self.replication.next_index[follower_id]
+            for follower_id in sorted(
+                self.replication.followers
+            ):
+                next_index = (
+                    self.replication.next_index[
+                        follower_id
+                    ]
+                )
 
-                prev_log_index = next_index - 1
-                prev_log_term = self.log.term_at(prev_log_index)
+                prev_log_index = (
+                    next_index - 1
+                )
+
+                prev_log_term = self.log.term_at(
+                    prev_log_index
+                )
 
                 if prev_log_term is None:
-                    raise RuntimeError("Invalid replication index")
+                    raise RuntimeError(
+                        "Invalid replication index"
+                    )
 
                 request = AppendEntriesRequest(
                     term=self.state.current_term,
@@ -280,7 +367,9 @@ class RaftNode:
                         request,
                     )
                 except TransportError:
-                    results[follower_id] = False
+                    results[
+                        follower_id
+                    ] = False
                     continue
 
                 if response.term > self.state.current_term:
@@ -292,7 +381,11 @@ class RaftNode:
                     self._persist_state()
 
                     self.replication = None
-                    results[follower_id] = False
+
+                    results[
+                        follower_id
+                    ] = False
+
                     break
 
                 if response.success:
@@ -300,12 +393,19 @@ class RaftNode:
                         follower_id,
                         request,
                     )
-                    results[follower_id] = True
+
+                    results[
+                        follower_id
+                    ] = True
+
                 else:
                     self.replication.record_failure(
                         follower_id,
                     )
-                    results[follower_id] = False
+
+                    results[
+                        follower_id
+                    ] = False
 
             return results
 
@@ -315,7 +415,9 @@ class RaftNode:
         transport: RaftTransport,
     ) -> bool:
         if self.replication is None:
-            raise RuntimeError("Leader replication state is unavailable")
+            raise RuntimeError(
+                "Leader replication state is unavailable"
+            )
 
         while self.state.role == NodeRole.LEADER:
             request = self.replication.build_request(
@@ -347,11 +449,14 @@ class RaftNode:
                     follower_id,
                     request,
                 )
+
                 return True
 
             # Backtrack next_index and retry until the
             # follower finds a matching prefix.
-            self.replication.record_failure(follower_id)
+            self.replication.record_failure(
+                follower_id
+            )
 
         return False
 
@@ -361,14 +466,20 @@ class RaftNode:
     ) -> None:
         with self._raft_lock:
             if self.state.role != NodeRole.LEADER:
-                raise NotLeaderError("Only the leader can replicate log entries")
+                raise NotLeaderError(
+                    "Only the leader can replicate log entries"
+                )
 
             self._initialize_leader_replication()
 
             if self.replication is None:
-                raise RuntimeError("Leader replication state is unavailable")
+                raise RuntimeError(
+                    "Leader replication state is unavailable"
+                )
 
-            for follower_id in sorted(self.replication.followers):
+            for follower_id in sorted(
+                self.replication.followers
+            ):
                 self._replicate_to_follower(
                     follower_id,
                     transport,
@@ -377,11 +488,16 @@ class RaftNode:
                 if self.state.role != NodeRole.LEADER:
                     return
 
-            previous_commit_index = self.state.commit_index
+            previous_commit_index = (
+                self.state.commit_index
+            )
 
             self.replication.advance_commit_index()
 
-            if self.state.commit_index != previous_commit_index:
+            if (
+                self.state.commit_index
+                != previous_commit_index
+            ):
                 # commit_index is durable Raft state.
                 self._persist_state()
 
@@ -411,17 +527,27 @@ class RaftNode:
                 return []
 
             if self.state.role != NodeRole.LEADER:
-                raise NotLeaderError(f"Node {self.node_id} is not the leader")
+                raise NotLeaderError(
+                    f"Node {self.node_id} is not the leader"
+                )
 
             for command in commands:
                 if command.operation not in {
                     "PUT",
                     "DELETE",
                 }:
-                    raise ValueError(f"Unsupported command: {command.operation}")
+                    raise ValueError(
+                        "Unsupported command: "
+                        f"{command.operation}"
+                    )
 
-                if command.operation == "PUT" and command.value is None:
-                    raise ValueError("PUT command requires a value")
+                if (
+                    command.operation == "PUT"
+                    and command.value is None
+                ):
+                    raise ValueError(
+                        "PUT command requires a value"
+                    )
 
             entries = [
                 self.log.append(
@@ -431,23 +557,40 @@ class RaftNode:
                 for command in commands
             ]
 
-            # Persist the complete batch before replication.
-            self._persist_log()
+            # Persist only newly appended entries before replication.
+            # This is the normal append-only fast path.
+            if self.persistence is not None:
+                self.persistence.append_log_entries(
+                    entries
+                )
 
             self._initialize_leader_replication()
 
-            self.replicate_log(transport)
+            self.replicate_log(
+                transport
+            )
 
             if self.state.role != NodeRole.LEADER:
-                return [False] * len(entries)
+                return [
+                    False
+                ] * len(entries)
 
             if self.replication is None:
-                return [False] * len(entries)
+                return [
+                    False
+                ] * len(entries)
 
-            results = [self.state.commit_index >= entry.index for entry in entries]
+            results = [
+                self.state.commit_index >= entry.index
+                for entry in entries
+            ]
 
-            if any(results):
-                self.send_heartbeats(transport)
+            if any(
+                results
+            ):
+                self.send_heartbeats(
+                    transport
+                )
 
             return results
 

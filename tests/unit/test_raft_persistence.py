@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 
 from pyraftkv.raft.log import (
+    LogEntry,
     RaftCommand,
     RaftLog,
 )
@@ -95,3 +96,113 @@ def test_concurrent_log_saves_are_safe(
 
     assert restored.last_index == 1
     assert restored.get(1) == log.get(1)
+
+def test_append_log_entries_survive_restart(
+    tmp_path,
+):
+    persistence = RaftPersistence(
+        tmp_path
+    )
+
+    entry_1 = LogEntry(
+        index=1,
+        term=1,
+        command=RaftCommand(
+            operation="PUT",
+            key="name",
+            value="harsha",
+        ),
+    )
+
+    entry_2 = LogEntry(
+        index=2,
+        term=1,
+        command=RaftCommand(
+            operation="PUT",
+            key="language",
+            value="python",
+        ),
+    )
+
+    persistence.append_log_entries(
+        [entry_1]
+    )
+
+    persistence.append_log_entries(
+        [entry_2]
+    )
+
+    restarted = RaftPersistence(
+        tmp_path
+    )
+
+    restored = restarted.load_log()
+
+    assert restored.last_index == 2
+    assert restored.get(1) == entry_1
+    assert restored.get(2) == entry_2
+
+
+def test_truncate_log_survives_restart(
+    tmp_path,
+):
+    persistence = RaftPersistence(
+        tmp_path
+    )
+
+    entry_1 = LogEntry(
+        index=1,
+        term=1,
+        command=RaftCommand(
+            operation="PUT",
+            key="a",
+            value="1",
+        ),
+    )
+
+    old_entry_2 = LogEntry(
+        index=2,
+        term=1,
+        command=RaftCommand(
+            operation="PUT",
+            key="b",
+            value="old",
+        ),
+    )
+
+    replacement_entry_2 = LogEntry(
+        index=2,
+        term=2,
+        command=RaftCommand(
+            operation="PUT",
+            key="b",
+            value="new",
+        ),
+    )
+
+    persistence.append_log_entries(
+        [
+            entry_1,
+            old_entry_2,
+        ]
+    )
+
+    persistence.truncate_log_from(
+        2
+    )
+
+    persistence.append_log_entries(
+        [
+            replacement_entry_2,
+        ]
+    )
+
+    restarted = RaftPersistence(
+        tmp_path
+    )
+
+    restored = restarted.load_log()
+
+    assert restored.last_index == 2
+    assert restored.get(1) == entry_1
+    assert restored.get(2) == replacement_entry_2
