@@ -1,0 +1,14 @@
+apiVersion: 1
+
+providers:
+  - name: PyRaftKV
+    orgId: 1
+    folder: PyRaftKV
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 10
+
+    options:
+      path: /etc/grafana/dashboards
+
