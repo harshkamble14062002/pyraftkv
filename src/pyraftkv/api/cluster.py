@@ -8,7 +8,11 @@ from pyraftkv.raft.command_processor import (
     RaftCommandProcessor,
 )
 from pyraftkv.raft.log import RaftCommand
-from pyraftkv.raft.node import NotLeaderError, RaftNode
+from pyraftkv.raft.node import (
+    NotLeaderError,
+    RaftNode,
+    ReadQuorumError,
+)
 from pyraftkv.transport.base import RaftTransport
 
 
@@ -81,7 +85,26 @@ def create_cluster_router(
     def get_key(
         key: str,
     ) -> dict[str, Any]:
-        value = node.store.get(key)
+        try:
+            value = node.linearizable_get(
+                key,
+                transport,
+            )
+        except NotLeaderError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "not_leader",
+                    "leader_id": node.state.leader_id,
+                },
+            ) from exc
+        except ReadQuorumError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "quorum_unavailable",
+                },
+            ) from exc
 
         if value is None:
             raise HTTPException(

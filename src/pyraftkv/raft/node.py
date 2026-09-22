@@ -1,6 +1,7 @@
 
 
 from concurrent.futures import (
+    FIRST_COMPLETED,
     Future,
     ThreadPoolExecutor,
     as_completed,
@@ -8,6 +9,7 @@ from concurrent.futures import (
 )
 from pathlib import Path
 from threading import Lock, RLock
+from time import monotonic
 
 from pyraftkv.raft.election import ElectionTracker
 from pyraftkv.raft.election_trigger import start_election_if_needed
@@ -30,7 +32,11 @@ from pyraftkv.transport.base import RaftTransport, TransportError
 
 
 class NotLeaderError(RuntimeError):
-    """Raised when a client write is sent to a non-leader node."""
+    """Raised when a leader-only client operation reaches a non-leader."""
+
+
+class ReadQuorumError(RuntimeError):
+    """Raised when leadership cannot be confirmed for a linearizable read."""
 
 
 class RaftNode:
@@ -588,6 +594,155 @@ class RaftNode:
             return self._replicate_followers_concurrently(
                 transport
             )
+
+    def confirm_read_quorum(
+        self,
+        transport: RaftTransport,
+        timeout: float = 0.25,
+    ) -> None:
+        """Confirm leadership with a fresh current-term quorum."""
+        with self._replication_lock:
+            with self._raft_lock:
+                if self.state.role != NodeRole.LEADER:
+                    raise NotLeaderError(
+                        f"Node {self.node_id} is not the leader"
+                    )
+
+                read_term = self.state.current_term
+                self._initialize_leader_replication()
+
+                if self.replication is None:
+                    raise RuntimeError(
+                        "Leader replication state is unavailable"
+                    )
+
+                followers = tuple(
+                    self.replication.followers
+                )
+                quorum_size = len(self.members) // 2 + 1
+
+            if quorum_size == 1:
+                with self._raft_lock:
+                    if (
+                        self.state.role != NodeRole.LEADER
+                        or self.state.current_term != read_term
+                    ):
+                        raise ReadQuorumError(
+                            "Leadership changed during read confirmation"
+                        )
+
+                    apply_committed_entries(
+                        self.state,
+                        self.log,
+                        self.store,
+                    )
+                return
+
+            deadline = monotonic() + timeout
+            fresh_futures: dict[str, Future[bool]] = {}
+            confirmed: set[str] = set()
+            failed: set[str] = set()
+
+            while (
+                1 + len(confirmed) < quorum_size
+                and monotonic() < deadline
+            ):
+                active: set[Future[bool]] = set()
+
+                for follower_id in followers:
+                    if (
+                        follower_id in confirmed
+                        or follower_id in failed
+                    ):
+                        continue
+
+                    future = self._replication_futures.get(
+                        follower_id
+                    )
+
+                    if future is not None and future.done():
+                        result = future.result()
+
+                        if (
+                            self._replication_futures.get(
+                                follower_id
+                            )
+                            is future
+                        ):
+                            del self._replication_futures[
+                                follower_id
+                            ]
+
+                        if (
+                            fresh_futures.get(follower_id)
+                            is future
+                        ):
+                            if result:
+                                confirmed.add(follower_id)
+                            else:
+                                failed.add(follower_id)
+                            continue
+
+                        future = None
+
+                    if future is None:
+                        future = self._replication_executor.submit(
+                            self._replicate_to_follower,
+                            follower_id,
+                            transport,
+                        )
+                        self._replication_futures[
+                            follower_id
+                        ] = future
+                        fresh_futures[follower_id] = future
+
+                    active.add(future)
+
+                if 1 + len(confirmed) >= quorum_size:
+                    break
+
+                if not active:
+                    break
+
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+
+                wait(
+                    active,
+                    timeout=remaining,
+                    return_when=FIRST_COMPLETED,
+                )
+
+            with self._raft_lock:
+                if (
+                    self.state.role != NodeRole.LEADER
+                    or self.state.current_term != read_term
+                ):
+                    raise ReadQuorumError(
+                        "Leadership changed during read confirmation"
+                    )
+
+                if 1 + len(confirmed) < quorum_size:
+                    raise ReadQuorumError(
+                        "A current-term read quorum is unavailable"
+                    )
+
+                apply_committed_entries(
+                    self.state,
+                    self.log,
+                    self.store,
+                )
+
+    def linearizable_get(
+        self,
+        key: str,
+        transport: RaftTransport,
+    ) -> str | None:
+        self.confirm_read_quorum(transport)
+
+        with self._raft_lock:
+            return self.store.get(key)
 
     def submit_command(
         self,
