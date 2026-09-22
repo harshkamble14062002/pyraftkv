@@ -5,8 +5,8 @@ import time
 class ElectionTimer:
     def __init__(
         self,
-        min_timeout: float = 0.150,
-        max_timeout: float = 0.300,
+        min_timeout: float = 1.5,
+        max_timeout: float = 3.0,
     ) -> None:
         if min_timeout <= 0:
             raise ValueError("min_timeout must be positive")

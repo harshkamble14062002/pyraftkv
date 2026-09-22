@@ -13,6 +13,7 @@ from prometheus_client import CONTENT_TYPE_LATEST
 from pyraftkv.api.cluster import create_cluster_router
 from pyraftkv.api.raft import create_raft_router
 from pyraftkv.observability.metrics import RaftMetrics
+from pyraftkv.raft.command_processor import RaftCommandProcessor
 from pyraftkv.raft.node import RaftNode
 from pyraftkv.raft.state import NodeRole
 from pyraftkv.transport.http import HTTPTransport
@@ -25,6 +26,7 @@ class NodeRuntime:
     node: RaftNode
     transport: HTTPTransport
     metrics: RaftMetrics | None = None
+    command_processor: RaftCommandProcessor | None = None
 
 
 def parse_peer(value: str) -> tuple[str, str]:
@@ -87,6 +89,10 @@ def create_runtime(
         node=node,
         transport=transport,
         metrics=metrics,
+        command_processor=RaftCommandProcessor(
+            node,
+            transport,
+        ),
     )
 
 
@@ -148,6 +154,9 @@ def create_node_app(
     ):
         app.state.runtime = runtime
 
+        if runtime.command_processor is not None:
+            runtime.command_processor.start()
+
         raft_task = asyncio.create_task(
             raft_background_loop(runtime)
         )
@@ -163,6 +172,9 @@ def create_node_app(
                 await raft_task
             except asyncio.CancelledError:
                 pass
+
+            if runtime.command_processor is not None:
+                runtime.command_processor.stop()
 
             runtime.transport.close()
 
@@ -244,6 +256,7 @@ def create_node_app(
         create_cluster_router(
             runtime.node,
             runtime.transport,
+            runtime.command_processor,
         )
     )
 

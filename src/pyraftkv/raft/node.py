@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import RLock
 
 from pyraftkv.raft.election import ElectionTracker
 from pyraftkv.raft.election_trigger import start_election_if_needed
@@ -36,7 +37,7 @@ class RaftNode:
 
         self.node_id = node_id
         self.members = set(members)
-
+        self._raft_lock = RLock()
         self.persistence = RaftPersistence(data_dir) if data_dir is not None else None
 
         # Load persisted Raft state and log when persistence
@@ -99,131 +100,134 @@ class RaftNode:
         self,
         request: RequestVoteRequest,
     ) -> RequestVoteResponse:
-        response = handle_request_vote(
-            self.state,
-            request,
-            local_last_index=self.log.last_index,
-            local_last_term=self.log.last_term,
-        )
+        with self._raft_lock:
+            response = handle_request_vote(
+                self.state,
+                request,
+                local_last_index=self.log.last_index,
+                local_last_term=self.log.last_term,
+            )
 
-        # Persist current_term and voted_for before
-        # responding to the candidate.
-        self._persist_state()
+            # Persist current_term and voted_for before
+            # responding to the candidate.
+            self._persist_state()
 
-        if response.vote_granted:
-            self.timer.reset()
+            if response.vote_granted:
+                self.timer.reset()
 
-        if self.state.role != NodeRole.LEADER:
-            self.replication = None
+            if self.state.role != NodeRole.LEADER:
+                self.replication = None
 
-        return response
+            return response
 
     def handle_append_entries(
         self,
         request: AppendEntriesRequest,
     ) -> AppendEntriesResponse:
-        before_entries = tuple(self.log.entries_from(1))
+        with self._raft_lock:
+            before_entries = tuple(self.log.entries_from(1))
 
-        before_state = (
-            self.state.current_term,
-            self.state.voted_for,
-            self.state.commit_index,
-        )
+            before_state = (
+                self.state.current_term,
+                self.state.voted_for,
+                self.state.commit_index,
+            )
 
-        response = handle_append_entries(
-            state=self.state,
-            log=self.log,
-            request=request,
-            store=self.store,
-        )
+            response = handle_append_entries(
+                state=self.state,
+                log=self.log,
+                request=request,
+                store=self.store,
+            )
 
-        after_entries = tuple(self.log.entries_from(1))
+            after_entries = tuple(self.log.entries_from(1))
 
-        after_state = (
-            self.state.current_term,
-            self.state.voted_for,
-            self.state.commit_index,
-        )
+            after_state = (
+                self.state.current_term,
+                self.state.voted_for,
+                self.state.commit_index,
+            )
 
-        # Do not rewrite the log for empty heartbeats.
-        if after_entries != before_entries:
-            self._persist_log()
+            # Do not rewrite the log for empty heartbeats.
+            if after_entries != before_entries:
+                self._persist_log()
 
-        if after_state != before_state:
-            self._persist_state()
+            if after_state != before_state:
+                self._persist_state()
 
-        if response.success:
-            self.timer.reset()
+            if response.success:
+                self.timer.reset()
 
-        if self.state.role != NodeRole.LEADER:
-            self.replication = None
+            if self.state.role != NodeRole.LEADER:
+                self.replication = None
 
-        return response
+            return response
 
     def tick(
         self,
         transport: RaftTransport,
     ) -> NodeRole:
-        previous_term = self.state.current_term
-        previous_vote = self.state.voted_for
+        with self._raft_lock:
+            previous_term = self.state.current_term
+            previous_vote = self.state.voted_for
 
-        requests = start_election_if_needed(
-            self.state,
-            self.timer,
-            self.election,
-            local_last_index=self.log.last_index,
-            local_last_term=self.log.last_term,
-        )
-
-        # Starting an election changes current_term and
-        # normally voted_for as well. Persist before sending RPCs.
-        if (
-            self.state.current_term != previous_term
-            or self.state.voted_for != previous_vote
-        ):
-            self._persist_state()
-
-        # Important for a single-node cluster.
-        if self.state.role == NodeRole.LEADER:
-            self._initialize_leader_replication()
-            return self.state.role
-
-        for peer_id in sorted(requests):
-            request = requests[peer_id]
-
-            try:
-                response = transport.request_vote(
-                    peer_id,
-                    request,
-                )
-            except TransportError:
-                continue
-
-            before_term = self.state.current_term
-            before_vote = self.state.voted_for
-
-            self.election.record_vote(
-                peer_id,
-                response,
+            requests = start_election_if_needed(
+                self.state,
+                self.timer,
+                self.election,
+                local_last_index=self.log.last_index,
+                local_last_term=self.log.last_term,
             )
 
-            # A higher-term response can force the
-            # candidate back to follower.
+            # Starting an election changes current_term and
+            # normally voted_for as well. Persist before sending RPCs.
             if (
-                self.state.current_term != before_term
-                or self.state.voted_for != before_vote
+                self.state.current_term != previous_term
+                or self.state.voted_for != previous_vote
             ):
                 self._persist_state()
 
+            # Important for a single-node cluster.
             if self.state.role == NodeRole.LEADER:
                 self._initialize_leader_replication()
-                break
+                return self.state.role
 
-            if self.state.role == NodeRole.FOLLOWER:
-                self.replication = None
-                break
+            for peer_id in sorted(requests):
+                request = requests[peer_id]
 
-        return self.state.role
+                try:
+                    response = transport.request_vote(
+                        peer_id,
+                        request,
+                    )
+                except TransportError:
+                    continue
+
+                before_term = self.state.current_term
+                before_vote = self.state.voted_for
+
+                self.election.record_vote(
+                    peer_id,
+                    response,
+                )
+
+                # A higher-term response can force the
+                # candidate back to follower.
+                if (
+                    self.state.current_term != before_term
+                    or self.state.voted_for != before_vote
+                ):
+                    self._persist_state()
+
+                if self.state.role == NodeRole.LEADER:
+                    self._initialize_leader_replication()
+                    break
+
+                if self.state.role == NodeRole.FOLLOWER:
+                    self.replication = None
+                    break
+
+            return self.state.role
 
     def _initialize_leader_replication(self) -> None:
         if self.state.role != NodeRole.LEADER:
@@ -241,68 +245,69 @@ class RaftNode:
         self,
         transport: RaftTransport,
     ) -> dict[str, bool]:
-        if self.state.role != NodeRole.LEADER:
-            return {}
+        with self._raft_lock:
+            if self.state.role != NodeRole.LEADER:
+                return {}
 
-        self._initialize_leader_replication()
+            self._initialize_leader_replication()
 
-        if self.replication is None:
-            return {}
+            if self.replication is None:
+                return {}
 
-        results: dict[str, bool] = {}
+            results: dict[str, bool] = {}
 
-        for follower_id in sorted(self.replication.followers):
-            next_index = self.replication.next_index[follower_id]
+            for follower_id in sorted(self.replication.followers):
+                next_index = self.replication.next_index[follower_id]
 
-            prev_log_index = next_index - 1
-            prev_log_term = self.log.term_at(prev_log_index)
+                prev_log_index = next_index - 1
+                prev_log_term = self.log.term_at(prev_log_index)
 
-            if prev_log_term is None:
-                raise RuntimeError("Invalid replication index")
+                if prev_log_term is None:
+                    raise RuntimeError("Invalid replication index")
 
-            request = AppendEntriesRequest(
-                term=self.state.current_term,
-                leader_id=self.node_id,
-                prev_log_index=prev_log_index,
-                prev_log_term=prev_log_term,
-                entries=(),
-                leader_commit=self.state.commit_index,
-            )
-
-            try:
-                response = transport.append_entries(
-                    follower_id,
-                    request,
-                )
-            except TransportError:
-                results[follower_id] = False
-                continue
-
-            if response.term > self.state.current_term:
-                self.state.become_follower(
-                    term=response.term,
+                request = AppendEntriesRequest(
+                    term=self.state.current_term,
+                    leader_id=self.node_id,
+                    prev_log_index=prev_log_index,
+                    prev_log_term=prev_log_term,
+                    entries=(),
+                    leader_commit=self.state.commit_index,
                 )
 
-                # current_term changed and must be durable.
-                self._persist_state()
+                try:
+                    response = transport.append_entries(
+                        follower_id,
+                        request,
+                    )
+                except TransportError:
+                    results[follower_id] = False
+                    continue
 
-                self.replication = None
-                results[follower_id] = False
-                break
+                if response.term > self.state.current_term:
+                    self.state.become_follower(
+                        term=response.term,
+                    )
 
-            if response.success:
-                self.replication.record_success(
-                    follower_id,
-                    request,
-                )
-                results[follower_id] = True
-            else:
-                self.replication.record_failure(
-                    follower_id,
-                )
-                results[follower_id] = False
+                    # current_term changed and must be durable.
+                    self._persist_state()
 
-        return results
+                    self.replication = None
+                    results[follower_id] = False
+                    break
+
+                if response.success:
+                    self.replication.record_success(
+                        follower_id,
+                        request,
+                    )
+                    results[follower_id] = True
+                else:
+                    self.replication.record_failure(
+                        follower_id,
+                    )
+                    results[follower_id] = False
+
+            return results
 
     def _replicate_to_follower(
         self,
@@ -354,78 +359,97 @@ class RaftNode:
         self,
         transport: RaftTransport,
     ) -> None:
-        if self.state.role != NodeRole.LEADER:
-            raise NotLeaderError("Only the leader can replicate log entries")
-
-        self._initialize_leader_replication()
-
-        if self.replication is None:
-            raise RuntimeError("Leader replication state is unavailable")
-
-        for follower_id in sorted(self.replication.followers):
-            self._replicate_to_follower(
-                follower_id,
-                transport,
-            )
-
+        with self._raft_lock:
             if self.state.role != NodeRole.LEADER:
-                return
+                raise NotLeaderError("Only the leader can replicate log entries")
 
-        previous_commit_index = self.state.commit_index
+            self._initialize_leader_replication()
 
-        self.replication.advance_commit_index()
+            if self.replication is None:
+                raise RuntimeError("Leader replication state is unavailable")
 
-        if self.state.commit_index != previous_commit_index:
-            # commit_index is durable Raft state.
-            self._persist_state()
+            for follower_id in sorted(self.replication.followers):
+                self._replicate_to_follower(
+                    follower_id,
+                    transport,
+                )
 
-            apply_committed_entries(
-                self.state,
-                self.log,
-                self.store,
-            )
+                if self.state.role != NodeRole.LEADER:
+                    return
+
+            previous_commit_index = self.state.commit_index
+
+            self.replication.advance_commit_index()
+
+            if self.state.commit_index != previous_commit_index:
+                # commit_index is durable Raft state.
+                self._persist_state()
+
+                apply_committed_entries(
+                    self.state,
+                    self.log,
+                    self.store,
+                )
 
     def submit_command(
         self,
         command: RaftCommand,
         transport: RaftTransport,
     ) -> bool:
-        if self.state.role != NodeRole.LEADER:
-            raise NotLeaderError(f"Node {self.node_id} is not the leader")
+        return self.submit_commands(
+            [command],
+            transport,
+        )[0]
 
-        if command.operation not in {"PUT", "DELETE"}:
-            raise ValueError(f"Unsupported command: {command.operation}")
+    def submit_commands(
+        self,
+        commands: list[RaftCommand],
+        transport: RaftTransport,
+    ) -> list[bool]:
+        with self._raft_lock:
+            if not commands:
+                return []
 
-        if command.operation == "PUT" and command.value is None:
-            raise ValueError("PUT command requires a value")
+            if self.state.role != NodeRole.LEADER:
+                raise NotLeaderError(f"Node {self.node_id} is not the leader")
 
-        entry = self.log.append(
-            term=self.state.current_term,
-            command=command,
-        )
+            for command in commands:
+                if command.operation not in {
+                    "PUT",
+                    "DELETE",
+                }:
+                    raise ValueError(f"Unsupported command: {command.operation}")
 
-        # Persist locally before sending the entry to followers.
-        self._persist_log()
+                if command.operation == "PUT" and command.value is None:
+                    raise ValueError("PUT command requires a value")
 
-        self._initialize_leader_replication()
+            entries = [
+                self.log.append(
+                    term=self.state.current_term,
+                    command=command,
+                )
+                for command in commands
+            ]
 
-        self.replicate_log(transport)
+            # Persist the complete batch before replication.
+            self._persist_log()
 
-        if self.state.role != NodeRole.LEADER:
-            return False
+            self._initialize_leader_replication()
 
-        if self.replication is None:
-            return False
+            self.replicate_log(transport)
 
-        # replicate_log() already advances commit_index,
-        # persists it, and applies committed entries.
-        if self.state.commit_index < entry.index:
-            return False
+            if self.state.role != NodeRole.LEADER:
+                return [False] * len(entries)
 
-        # Propagate the new leader_commit to followers.
-        self.send_heartbeats(transport)
+            if self.replication is None:
+                return [False] * len(entries)
 
-        return True
+            results = [self.state.commit_index >= entry.index for entry in entries]
+
+            if any(results):
+                self.send_heartbeats(transport)
+
+            return results
 
     def put(
         self,

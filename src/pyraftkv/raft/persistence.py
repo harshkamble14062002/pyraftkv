@@ -1,6 +1,8 @@
 import json
 import os
+import tempfile
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from pyraftkv.raft.log import RaftLog
@@ -31,30 +33,50 @@ class RaftPersistence:
 
         self.log_path = self.directory / "raft-log.json"
 
+        self._write_lock = RLock()
+
     def _atomic_write(
         self,
         path: Path,
         data: Any,
     ) -> None:
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-
-        with temp_path.open(
-            "w",
-            encoding="utf-8",
-        ) as file:
-            json.dump(
-                data,
-                file,
-                separators=(",", ":"),
+        with self._write_lock:
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                dir=path.parent,
+                text=True,
             )
 
-            file.flush()
-            os.fsync(file.fileno())
+            temp_path = Path(temp_name)
 
-        os.replace(
-            temp_path,
-            path,
-        )
+            try:
+                with os.fdopen(
+                    fd,
+                    "w",
+                    encoding="utf-8",
+                ) as file:
+                    json.dump(
+                        data,
+                        file,
+                        separators=(",", ":"),
+                    )
+
+                    file.flush()
+                    os.fsync(file.fileno())
+
+                os.replace(
+                    temp_path,
+                    path,
+                )
+
+            except Exception:
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+                raise
 
     def save_state(
         self,
