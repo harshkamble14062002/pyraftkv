@@ -3,6 +3,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from pyraftkv.raft.command_processor import (
+    CommandQueueFullError,
+    RaftCommandProcessor,
+)
+from pyraftkv.raft.log import RaftCommand
 from pyraftkv.raft.node import NotLeaderError, RaftNode
 from pyraftkv.transport.base import RaftTransport
 
@@ -14,6 +19,7 @@ class PutRequest(BaseModel):
 def create_cluster_router(
     node: RaftNode,
     transport: RaftTransport,
+    command_processor: RaftCommandProcessor | None = None,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/kv",
@@ -26,11 +32,27 @@ def create_cluster_router(
         body: PutRequest,
     ) -> dict[str, Any]:
         try:
-            committed = node.put(
-                key,
-                body.value,
-                transport,
-            )
+            if command_processor is None:
+                committed = node.put(
+                    key,
+                    body.value,
+                    transport,
+                )
+            else:
+                committed = command_processor.submit(
+                    RaftCommand(
+                        operation="PUT",
+                        key=key,
+                        value=body.value,
+                    )
+                )
+        except CommandQueueFullError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "command_queue_full",
+                },
+            ) from exc
         except NotLeaderError as exc:
             raise HTTPException(
                 status_code=409,
@@ -79,10 +101,25 @@ def create_cluster_router(
         key: str,
     ) -> dict[str, Any]:
         try:
-            committed = node.delete(
-                key,
-                transport,
-            )
+            if command_processor is None:
+                committed = node.delete(
+                    key,
+                    transport,
+                )
+            else:
+                committed = command_processor.submit(
+                    RaftCommand(
+                        operation="DELETE",
+                        key=key,
+                    )
+                )
+        except CommandQueueFullError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "command_queue_full",
+                },
+            ) from exc
         except NotLeaderError as exc:
             raise HTTPException(
                 status_code=409,
