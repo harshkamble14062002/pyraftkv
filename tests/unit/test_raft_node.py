@@ -145,3 +145,50 @@ def test_two_nodes_exchange_request_vote():
     assert response.vote_granted is True
 
     assert node2.state.voted_for == "node-1"
+
+def test_leader_write_uses_append_only_log_persistence(
+    tmp_path,
+):
+    node = RaftNode(
+        "node-1",
+        {"node-1"},
+        data_dir=tmp_path,
+    )
+
+    node.state.role = NodeRole.LEADER
+    node.state.current_term = 1
+
+    real_persistence = node.persistence
+
+    assert real_persistence is not None
+
+    node.persistence = Mock(
+        wraps=real_persistence
+    )
+
+    transport = InMemoryTransport()
+
+    committed = node.put(
+        "name",
+        "harsha",
+        transport,
+    )
+
+    assert committed is True
+
+    node.persistence.append_log_entries.assert_called_once()
+    node.persistence.save_log.assert_not_called()
+
+    persisted_entries = (
+        node.persistence.append_log_entries.call_args.args[0]
+    )
+
+    assert len(persisted_entries) == 1
+
+    entry = persisted_entries[0]
+
+    assert entry.index == 1
+    assert entry.term == 1
+    assert entry.command.operation == "PUT"
+    assert entry.command.key == "name"
+    assert entry.command.value == "harsha"

@@ -1,0 +1,18 @@
+{
+  "target": "http://127.0.0.1:8002",
+  "operation": "put",
+  "concurrency": 10,
+  "warmup_requests": 100,
+  "outcomes": {
+    "200": 5000
+  },
+  "requests": 5000,
+  "successes": 5000,
+  "failures": 0,
+  "duration_seconds": 46.3555,
+  "throughput_rps": 107.86,
+  "latency_mean_ms": 92.614,
+  "latency_p50_ms": 92.053,
+  "latency_p95_ms": 105.867,
+  "latency_p99_ms": 122.096
+}
