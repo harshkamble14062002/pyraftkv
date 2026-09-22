@@ -210,3 +210,72 @@ def test_stale_follower_value_cannot_be_read_authoritatively():
 
     with pytest.raises(NotLeaderError):
         follower.linearizable_get("key", transport)
+
+
+class CountingTransport:
+    def __init__(self, inner: InMemoryTransport) -> None:
+        self.inner = inner
+        self.append_targets: list[str] = []
+
+    def append_entries(
+        self,
+        target_id: str,
+        request: AppendEntriesRequest,
+    ) -> AppendEntriesResponse:
+        self.append_targets.append(target_id)
+        return self.inner.append_entries(target_id, request)
+
+
+def test_recent_quorum_confirmation_is_reused(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(
+        "pyraftkv.raft.node.monotonic",
+        lambda: now[0],
+    )
+    leader, _, inner = create_leader()
+    transport = CountingTransport(inner)
+    leader.store.put("key", "value")
+
+    assert leader.linearizable_get("key", transport) == "value"
+    first_barrier_calls = len(transport.append_targets)
+
+    assert leader.linearizable_get("key", transport) == "value"
+    assert len(transport.append_targets) == first_barrier_calls
+
+
+def test_expired_read_lease_requires_fresh_quorum(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(
+        "pyraftkv.raft.node.monotonic",
+        lambda: now[0],
+    )
+    leader, _, inner = create_leader()
+    transport = CountingTransport(inner)
+
+    leader.linearizable_get("key", transport)
+    first_barrier_calls = len(transport.append_targets)
+
+    now[0] += leader._read_lease_duration
+
+    leader.linearizable_get("key", transport)
+
+    assert len(transport.append_targets) > first_barrier_calls
+
+
+def test_term_change_invalidates_read_lease(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(
+        "pyraftkv.raft.node.monotonic",
+        lambda: now[0],
+    )
+    leader, _, inner = create_leader()
+    transport = CountingTransport(inner)
+
+    leader.linearizable_get("key", transport)
+    first_barrier_calls = len(transport.append_targets)
+
+    leader.state.current_term += 1
+
+    leader.linearizable_get("key", transport)
+
+    assert len(transport.append_targets) > first_barrier_calls

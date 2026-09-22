@@ -115,6 +115,9 @@ class RaftNode:
         )
 
         self.replication: LeaderReplication | None = None
+        self._read_lease_duration = 0.5
+        self._last_read_quorum_term: int | None = None
+        self._last_read_quorum_time: float | None = None
 
     def _persist_state(self) -> None:
         if self.persistence is None:
@@ -631,6 +634,8 @@ class RaftNode:
                             "Leadership changed during read confirmation"
                         )
 
+                    self._last_read_quorum_term = read_term
+                    self._last_read_quorum_time = monotonic()
                     apply_committed_entries(
                         self.state,
                         self.log,
@@ -728,20 +733,56 @@ class RaftNode:
                         "A current-term read quorum is unavailable"
                     )
 
+                self._last_read_quorum_term = read_term
+                self._last_read_quorum_time = monotonic()
                 apply_committed_entries(
                     self.state,
                     self.log,
                     self.store,
                 )
 
+    def _has_valid_read_lease(self) -> bool:
+        if self.state.role != NodeRole.LEADER:
+            return False
+
+        if (
+            self._last_read_quorum_term
+            != self.state.current_term
+            or self._last_read_quorum_time is None
+        ):
+            return False
+
+        elapsed = monotonic() - self._last_read_quorum_time
+
+        return 0 <= elapsed < self._read_lease_duration
+
     def linearizable_get(
         self,
         key: str,
         transport: RaftTransport,
     ) -> str | None:
+        with self._raft_lock:
+            if self.state.role != NodeRole.LEADER:
+                raise NotLeaderError(
+                    f"Node {self.node_id} is not the leader"
+                )
+
+            if self._has_valid_read_lease():
+                apply_committed_entries(
+                    self.state,
+                    self.log,
+                    self.store,
+                )
+                return self.store.get(key)
+
         self.confirm_read_quorum(transport)
 
         with self._raft_lock:
+            if not self._has_valid_read_lease():
+                raise ReadQuorumError(
+                    "Leadership changed after read confirmation"
+                )
+
             return self.store.get(key)
 
     def submit_command(
