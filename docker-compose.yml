@@ -1,0 +1,113 @@
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pyraftkv-node1
+    command:
+      - --node-id
+      - node1
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --peer
+      - node2=http://node2:8000
+      - --peer
+      - node3=http://node3:8000
+      - --data-dir
+      - /data
+    ports:
+      - "8001:8000"
+    volumes:
+      - node1-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pyraftkv-node2
+    command:
+      - --node-id
+      - node2
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --peer
+      - node1=http://node1:8000
+      - --peer
+      - node3=http://node3:8000
+      - --data-dir
+      - /data
+    ports:
+      - "8002:8000"
+    volumes:
+      - node2-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pyraftkv-node3
+    command:
+      - --node-id
+      - node3
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --peer
+      - node1=http://node1:8000
+      - --peer
+      - node2=http://node2:8000
+      - --data-dir
+      - /data
+    ports:
+      - "8003:8000"
+    volumes:
+      - node3-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
