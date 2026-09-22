@@ -19,7 +19,7 @@ class HTTPTransport:
     def __init__(
         self,
         addresses: dict[str, str],
-        timeout: float = 1.0,
+        timeout: float = 0.2,
         client: httpx.Client | None = None,
     ) -> None:
         self._addresses = {
