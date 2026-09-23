@@ -25,6 +25,7 @@ from pyraftkv.raft.rpc import (
     TimeoutNowRequest,
     TimeoutNowResponse,
 )
+from pyraftkv.raft.snapshot import RaftSnapshot
 from pyraftkv.raft.state import NodeRole, RaftState
 from pyraftkv.raft.state_machine import apply_committed_entries
 from pyraftkv.raft.timer import ElectionTimer
@@ -74,33 +75,82 @@ class RaftNode:
             else None
         )
 
-        # Load persisted Raft state and log when persistence
-        # is enabled. Otherwise start with fresh state.
+        # Load persisted Raft state, snapshot, and log.
+        # Existing installations have an empty snapshot boundary.
         if self.persistence is None:
             self.state = RaftState(
                 node_id=node_id,
             )
+            self.snapshot = RaftSnapshot()
             self.log = RaftLog()
         else:
             self.state = self.persistence.load_state(
                 node_id
             )
+            self.snapshot = (
+                self.persistence.load_snapshot()
+            )
             self.log = self.persistence.load_log()
 
+            if (
+                self.snapshot.last_included_index
+                < self.log.base_index
+            ):
+                raise RuntimeError(
+                    "Raft log is compacted beyond durable snapshot"
+                )
+
+            if (
+                self.snapshot.last_included_index
+                == self.log.base_index
+                and self.snapshot.last_included_term
+                != self.log.base_term
+            ):
+                raise RuntimeError(
+                    "Raft snapshot conflicts with log boundary"
+                )
+
+            if (
+                self.snapshot.last_included_index
+                > self.log.base_index
+            ):
+                # Crash-safe recovery when the snapshot was
+                # persisted before log compaction completed.
+                self.log.install_snapshot_boundary(
+                    self.snapshot.last_included_index,
+                    self.snapshot.last_included_term,
+                )
+                self.persistence.save_log(self.log)
+
+        if (
+            self.state.commit_index
+            < self.snapshot.last_included_index
+        ):
+            self.state.commit_index = (
+                self.snapshot.last_included_index
+            )
+            self._persist_state()
+
         # A persisted commit index must never point beyond
-        # the available Raft log.
+        # the snapshot boundary plus retained log suffix.
         if self.state.commit_index > self.log.last_index:
             raise RuntimeError(
                 "Persisted commit index exceeds Raft log"
             )
 
-        # KVStore is runtime state. Rebuild it by replaying
-        # the committed portion of the Raft log.
+        # Rebuild runtime KV state from the durable snapshot,
+        # then replay committed entries in the retained suffix.
         self.store = KVStore()
+        self.store.restore(self.snapshot.state)
 
-        self.state.last_applied = 0
+        self.state.last_applied = (
+            self.snapshot.last_included_index
+        )
 
-        if self.state.commit_index > 0:
+        if (
+            self.state.commit_index
+            > self.state.last_applied
+        ):
             apply_committed_entries(
                 self.state,
                 self.log,
@@ -185,10 +235,66 @@ class RaftNode:
         # truncate from 2
         # append new 2
         # append new 3
+        replace_from = before_entries[
+            common_prefix_length
+        ].index
         self.persistence.replace_log_suffix(
-            common_prefix_length + 1,
+            replace_from,
             new_suffix,
         )
+    def create_snapshot(self) -> bool:
+        """Persist applied state, then compact the covered log prefix."""
+        with self._raft_lock:
+            snapshot_index = min(
+                self.state.commit_index,
+                self.state.last_applied,
+            )
+
+            if snapshot_index <= self.log.base_index:
+                return False
+
+            snapshot_term = self.log.term_at(
+                snapshot_index
+            )
+
+            if snapshot_term is None:
+                raise RuntimeError(
+                    "Snapshot boundary is missing from Raft log"
+                )
+
+            snapshot = RaftSnapshot(
+                last_included_index=snapshot_index,
+                last_included_term=snapshot_term,
+                state=self.store.snapshot(),
+            )
+
+            # The durable snapshot must exist before any log
+            # entries it covers are removed.
+            if self.persistence is not None:
+                self.persistence.save_snapshot(snapshot)
+
+            compacted_log = self.log.copy()
+            compacted_log.compact_through(
+                snapshot_index
+            )
+
+            if self.persistence is not None:
+                self.persistence.save_log(
+                    compacted_log
+                )
+                self._persist_state()
+
+            self.snapshot = snapshot
+            self.log = compacted_log
+
+            if self.replication is not None:
+                self.replication.log = self.log
+
+            return True
+
+    def compact_log(self) -> bool:
+        return self.create_snapshot()
+
 
     def handle_request_vote(
         self,
@@ -220,7 +326,7 @@ class RaftNode:
     ) -> AppendEntriesResponse:
         with self._raft_lock:
             before_entries = tuple(
-                self.log.entries_from(1)
+                self.log.entries_from(self.log.first_index)
             )
 
             before_state = (
@@ -237,7 +343,7 @@ class RaftNode:
             )
 
             after_entries = tuple(
-                self.log.entries_from(1)
+                self.log.entries_from(self.log.first_index)
             )
 
             after_state = (
