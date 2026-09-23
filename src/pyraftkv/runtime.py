@@ -10,6 +10,7 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST
 
+from pyraftkv.api.admin import create_admin_router
 from pyraftkv.api.cluster import create_cluster_router
 from pyraftkv.api.raft import create_raft_router
 from pyraftkv.observability.metrics import RaftMetrics
@@ -271,6 +272,10 @@ def create_node_app(
 
     app.include_router(
         create_raft_router(runtime.node)
+    )
+
+    app.include_router(
+        create_admin_router(runtime.node)
     )
 
     app.include_router(

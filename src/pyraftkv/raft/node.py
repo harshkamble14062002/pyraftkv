@@ -30,6 +30,10 @@ from pyraftkv.raft.rpc import (
 from pyraftkv.raft.snapshot import RaftSnapshot
 from pyraftkv.raft.state import NodeRole, RaftState
 from pyraftkv.raft.state_machine import apply_committed_entries
+from pyraftkv.raft.status import (
+    FollowerStatus,
+    RaftNodeStatus,
+)
 from pyraftkv.raft.timer import ElectionTimer
 from pyraftkv.raft.vote import handle_request_vote
 from pyraftkv.storage.store import KVStore
@@ -189,6 +193,69 @@ class RaftNode:
             wait=wait_for_workers,
             cancel_futures=True,
         )
+
+    def status(self) -> RaftNodeStatus:
+        """Return a detached, read-only snapshot of Raft state."""
+        with self._raft_lock:
+            followers: tuple[
+                FollowerStatus,
+                ...,
+            ] | None = None
+
+            if (
+                self.state.role == NodeRole.LEADER
+                and self.replication is not None
+            ):
+                followers = tuple(
+                    FollowerStatus(
+                        node_id=follower_id,
+                        match_index=(
+                            self.replication.match_index[
+                                follower_id
+                            ]
+                        ),
+                        next_index=(
+                            self.replication.next_index[
+                                follower_id
+                            ]
+                        ),
+                        replication_lag=max(
+                            0,
+                            self.log.last_index
+                            - self.replication.match_index[
+                                follower_id
+                            ],
+                        ),
+                    )
+                    for follower_id in sorted(
+                        self.replication.followers
+                    )
+                )
+
+            return RaftNodeStatus(
+                node_id=self.node_id,
+                role=self.state.role.value,
+                current_term=self.state.current_term,
+                leader_id=self.state.leader_id,
+                commit_index=self.state.commit_index,
+                last_applied=self.state.last_applied,
+                log_base_index=self.log.base_index,
+                log_base_term=self.log.base_term,
+                log_last_index=self.log.last_index,
+                log_last_term=self.log.last_term,
+                snapshot_index=(
+                    self.snapshot.last_included_index
+                ),
+                snapshot_term=(
+                    self.snapshot.last_included_term
+                ),
+                peers=tuple(
+                    sorted(
+                        self.members - {self.node_id}
+                    )
+                ),
+                followers=followers,
+            )
 
     def _persist_state(self) -> None:
         if self.persistence is None:
