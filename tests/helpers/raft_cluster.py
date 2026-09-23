@@ -135,8 +135,8 @@ class RaftCluster:
             )
 
         old_node = self.nodes[node_id]
-        old_node.close()
         self.transport.unregister(node_id)
+        old_node.close(wait_for_workers=True)
 
         restarted = self._new_node(node_id)
         self.nodes[node_id] = restarted

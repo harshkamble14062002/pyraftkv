@@ -9,7 +9,7 @@ from concurrent.futures import (
 )
 from pathlib import Path
 from threading import Lock, RLock
-from time import monotonic
+from time import monotonic, perf_counter
 
 from pyraftkv.raft.election import ElectionTracker
 from pyraftkv.raft.election_trigger import start_election_if_needed
@@ -178,10 +178,15 @@ class RaftNode:
         self._last_read_quorum_time: float | None = None
         self._leadership_transfer_in_progress = False
 
-    def close(self) -> None:
+    def close(self, wait_for_workers: bool = False) -> None:
         """Release persistent follower-replication workers."""
+        # Synchronize with an active inbound handler, but release
+        # the Raft lock before workers are joined.
+        with self._raft_lock:
+            pass
+
         self._replication_executor.shutdown(
-            wait=False,
+            wait=wait_for_workers,
             cancel_futures=True,
         )
 
@@ -793,6 +798,15 @@ class RaftNode:
                         follower_id,
                         append_request,
                     )
+
+                    if (
+                        self.replication.next_index[follower_id]
+                        <= self.log.last_index
+                        or append_request.leader_commit
+                        < self.state.commit_index
+                    ):
+                        continue
+
                     return True
 
                 # The follower's log does not match.
@@ -803,6 +817,7 @@ class RaftNode:
     def _replicate_followers_concurrently(
         self,
         transport: RaftTransport,
+        required_follower: str | None = None,
     ) -> dict[str, bool]:
         with self._raft_lock:
             if self.state.role != NodeRole.LEADER:
@@ -856,29 +871,55 @@ class RaftNode:
         if not active:
             return results
 
-        # Return as soon as any follower responds.
-        # A dead follower must not delay a healthy follower.
-        done, _ = wait(
-            active.values(),
-            timeout=0.25,
-            
-        )
+        # Return after the first successful follower response.
+        # Fast failures must not hide a healthy quorum response,
+        # and a delayed peer must not extend the total wait budget.
+        pending = set(active.values())
+        deadline = perf_counter() + 0.25
 
-        for follower_id, future in active.items():
-            if future not in done:
-                continue
+        while pending:
+            remaining = deadline - perf_counter()
 
-            results[follower_id] = future.result()
+            if remaining <= 0:
+                break
+
+            done, pending = wait(
+                pending,
+                timeout=remaining,
+                return_when=FIRST_COMPLETED,
+            )
+
+            if not done:
+                break
+
+            successful = False
+
+            for follower_id, future in active.items():
+                if future not in done:
+                    continue
+
+                result = future.result()
+                results[follower_id] = result
+                successful = successful or result
+
+                if (
+                    self._replication_futures.get(
+                        follower_id
+                    )
+                    is future
+                ):
+                    del self._replication_futures[
+                        follower_id
+                    ]
 
             if (
-                self._replication_futures.get(
-                    follower_id
-                )
-                is future
+                required_follower is None
+                and successful
             ):
-                del self._replication_futures[
-                    follower_id
-                ]
+                break
+
+            if required_follower in results:
+                break
 
         return results
 
@@ -1158,7 +1199,8 @@ class RaftNode:
 
             try:
                 results = self._replicate_followers_concurrently(
-                    transport
+                    transport,
+                    required_follower=target_id,
                 )
 
                 with self._raft_lock:
