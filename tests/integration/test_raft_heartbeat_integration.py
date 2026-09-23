@@ -22,6 +22,26 @@ def create_cluster():
     return transport, nodes
 
 
+def collect_heartbeat_results(
+    leader: RaftNode,
+    transport: InMemoryTransport,
+    max_rounds: int = 50,
+) -> dict[str, bool]:
+    results: dict[str, bool] = {}
+
+    for _ in range(max_rounds):
+        results.update(
+            leader.send_heartbeats(transport)
+        )
+
+        if set(results) == leader.members - {
+            leader.node_id
+        }:
+            return results
+
+    return results
+
+
 def test_leader_sends_heartbeat_to_followers():
     transport, nodes = create_cluster()
 
@@ -34,7 +54,10 @@ def test_leader_sends_heartbeat_to_followers():
 
     assert leader.state.role == NodeRole.LEADER
 
-    results = leader.send_heartbeats(transport)
+    results = collect_heartbeat_results(
+        leader,
+        transport,
+    )
 
     assert results == {
         "node-2": True,
@@ -57,7 +80,10 @@ def test_unreachable_follower_does_not_crash_leader():
 
     transport.block("node-3")
 
-    results = leader.send_heartbeats(transport)
+    results = collect_heartbeat_results(
+        leader,
+        transport,
+    )
 
     assert results["node-2"] is True
     assert results["node-3"] is False
@@ -79,7 +105,11 @@ def test_leader_steps_down_on_higher_term_response():
 
     nodes["node-2"].state.current_term = leader.state.current_term + 1
 
-    leader.send_heartbeats(transport)
+    for _ in range(50):
+        if leader.state.role == NodeRole.FOLLOWER:
+            break
+
+        leader.send_heartbeats(transport)
 
     assert leader.state.role == NodeRole.FOLLOWER
     assert leader.replication is None

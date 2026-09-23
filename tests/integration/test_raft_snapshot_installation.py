@@ -43,6 +43,24 @@ def create_cluster(tmp_path=None):
     return transport, nodes, leader
 
 
+def replicate_until(
+    leader: RaftNode,
+    transport: InMemoryTransport,
+    predicate,
+    max_rounds: int = 50,
+) -> None:
+    for _ in range(max_rounds + 1):
+        if predicate():
+            return
+
+        leader.replicate_log(transport)
+
+    raise AssertionError(
+        "Snapshot follower did not converge within "
+        f"{max_rounds} rounds"
+    )
+
+
 def test_follower_installs_snapshot(tmp_path):
     follower = RaftNode(
         "node-2",
@@ -182,7 +200,17 @@ def test_leader_sends_snapshot_then_remaining_suffix():
     assert lagging.log.last_index == 0
 
     transport.unblock("node-3")
-    leader.replicate_log(transport)
+    replicate_until(
+        leader,
+        transport,
+        lambda: (
+            lagging.log.base_index == 2
+            and lagging.log.get(3)
+            == leader.log.get(3)
+            and lagging.state.commit_index
+            == leader.state.commit_index
+        ),
+    )
 
     assert lagging.log.base_index == 2
     assert lagging.log.get(3) == leader.log.get(3)
@@ -197,7 +225,7 @@ def test_leader_sends_snapshot_then_remaining_suffix():
 
 
 def test_restart_after_snapshot_installation(tmp_path):
-    transport, _nodes, leader = create_cluster(tmp_path)
+    transport, nodes, leader = create_cluster(tmp_path)
     transport.block("node-3")
 
     assert leader.put("a", "1", transport)
@@ -205,8 +233,19 @@ def test_restart_after_snapshot_installation(tmp_path):
     assert leader.create_snapshot()
     assert leader.put("c", "3", transport)
 
+    lagging = nodes["node-3"]
     transport.unblock("node-3")
-    leader.replicate_log(transport)
+    replicate_until(
+        leader,
+        transport,
+        lambda: (
+            lagging.log.base_index == 2
+            and lagging.state.commit_index == 3
+            and lagging.state.last_applied == 3
+        ),
+    )
+    transport.unregister("node-3")
+    lagging.close()
 
     restarted = RaftNode(
         "node-3",

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from unittest.mock import Mock
 
 import pytest
@@ -38,6 +39,24 @@ def elect_node1(transport, nodes):
     return leader
 
 
+def replicate_until(
+    leader: RaftNode,
+    transport: InMemoryTransport,
+    predicate: Callable[[], bool],
+    max_rounds: int = 50,
+) -> None:
+    for _ in range(max_rounds + 1):
+        if predicate():
+            return
+
+        leader.send_heartbeats(transport)
+
+    raise AssertionError(
+        "Followers did not converge within "
+        f"{max_rounds} replication rounds"
+    )
+
+
 def test_generic_put_command_is_committed():
     transport, nodes = create_cluster()
     leader = elect_node1(transport, nodes)
@@ -52,6 +71,15 @@ def test_generic_put_command_is_committed():
     )
 
     assert committed is True
+
+    replicate_until(
+        leader,
+        transport,
+        lambda: all(
+            node.store.get("language") == "python"
+            for node in nodes.values()
+        ),
+    )
 
     assert leader.store.get("language") == "python"
     assert nodes["node-2"].store.get("language") == "python"
@@ -76,6 +104,15 @@ def test_delete_is_replicated_and_committed():
     )
 
     assert committed is True
+
+    replicate_until(
+        leader,
+        transport,
+        lambda: all(
+            node.store.get("language") is None
+            for node in nodes.values()
+        ),
+    )
 
     assert leader.store.get("language") is None
     assert nodes["node-2"].store.get("language") is None
