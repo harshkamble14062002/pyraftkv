@@ -49,14 +49,9 @@ class HigherTermSnapshotTransport:
     ) -> InstallSnapshotResponse:
         self.install_calls += 1
 
-        if target_id == "node-2":
-            return InstallSnapshotResponse(
-                term=request.term + 1,
-                success=False,
-            )
-
-        raise TransportError(
-            f"{target_id} is unavailable"
+        return InstallSnapshotResponse(
+            term=request.term + 1,
+            success=False,
         )
 
 
