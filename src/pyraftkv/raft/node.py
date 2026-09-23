@@ -831,6 +831,7 @@ class RaftNode:
             followers = tuple(
                 self.replication.followers
             )
+            follower_quorum = len(self.members) // 2
 
         if not followers:
             return {}
@@ -892,15 +893,12 @@ class RaftNode:
             if not done:
                 break
 
-            successful = False
-
             for follower_id, future in active.items():
                 if future not in done:
                     continue
 
                 result = future.result()
                 results[follower_id] = result
-                successful = successful or result
 
                 if (
                     self._replication_futures.get(
@@ -914,7 +912,8 @@ class RaftNode:
 
             if (
                 required_follower is None
-                and successful
+                and sum(results.values())
+                >= follower_quorum
             ):
                 break
 
