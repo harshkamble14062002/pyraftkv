@@ -1,0 +1,115 @@
+{
+  "format_version": 1,
+  "generated_at": "2026-09-23T06:26:05.309376+00:00",
+  "environment": {
+    "transport": "in_memory",
+    "cluster_size": 3,
+    "python_benchmark": true
+  },
+  "disclaimer": "These are local development-machine measurements and are not representative of production cluster performance.",
+  "configuration": {
+    "requests": 100,
+    "concurrency": 10,
+    "recovery_entries": 50
+  },
+  "scenarios": {
+    "normal_put": {
+      "scenario": "normal_put",
+      "operation": "put",
+      "concurrency": 10,
+      "requests": 100,
+      "successes": 100,
+      "failures": 0,
+      "duration_seconds": 0.0441,
+      "throughput_rps": 2267.47,
+      "latency_mean_ms": 4.174,
+      "latency_p50_ms": 3.998,
+      "latency_p95_ms": 6.33,
+      "latency_p99_ms": 6.731
+    },
+    "linearizable_get": {
+      "scenario": "linearizable_get",
+      "operation": "get",
+      "concurrency": 10,
+      "requests": 100,
+      "successes": 100,
+      "failures": 0,
+      "duration_seconds": 0.0075,
+      "throughput_rps": 13294.23,
+      "latency_mean_ms": 0.426,
+      "latency_p50_ms": 0.007,
+      "latency_p95_ms": 4.832,
+      "latency_p99_ms": 5.507
+    },
+    "follower_unavailable": {
+      "scenario": "follower_unavailable",
+      "operation": "put",
+      "concurrency": 10,
+      "requests": 100,
+      "successes": 100,
+      "failures": 0,
+      "duration_seconds": 0.0467,
+      "throughput_rps": 2139.91,
+      "latency_mean_ms": 4.389,
+      "latency_p50_ms": 4.237,
+      "latency_p95_ms": 5.812,
+      "latency_p99_ms": 6.165
+    },
+    "mixed_workload": {
+      "scenario": "mixed_workload",
+      "operation": "mixed",
+      "concurrency": 10,
+      "requests": 100,
+      "successes": 100,
+      "failures": 0,
+      "duration_seconds": 0.0367,
+      "throughput_rps": 2722.96,
+      "latency_mean_ms": 3.339,
+      "latency_p50_ms": 4.242,
+      "latency_p95_ms": 6.273,
+      "latency_p99_ms": 6.389
+    },
+    "leader_failover": {
+      "scenario": "leader_failover",
+      "old_leader": "node-1",
+      "new_leader": "node-2",
+      "requests": 1,
+      "successes": 1,
+      "failures": 0,
+      "duration_seconds": 0.0003,
+      "throughput_rps": 3528.34,
+      "latency_mean_ms": 0.283,
+      "latency_p50_ms": 0.283,
+      "latency_p95_ms": 0.283,
+      "latency_p99_ms": 0.283
+    },
+    "follower_catch_up": {
+      "scenario": "follower_catch_up",
+      "entries": 50,
+      "install_snapshot_calls": 0,
+      "requests": 1,
+      "successes": 1,
+      "failures": 0,
+      "duration_seconds": 0.0006,
+      "throughput_rps": 1608.95,
+      "latency_mean_ms": 0.622,
+      "latency_p50_ms": 0.622,
+      "latency_p95_ms": 0.622,
+      "latency_p99_ms": 0.622
+    },
+    "snapshot_catch_up": {
+      "scenario": "snapshot_catch_up",
+      "entries": 50,
+      "install_snapshot_calls": 2,
+      "requests": 1,
+      "successes": 1,
+      "failures": 0,
+      "duration_seconds": 0.0002,
+      "throughput_rps": 6255.12,
+      "latency_mean_ms": 0.16,
+      "latency_p50_ms": 0.16,
+      "latency_p95_ms": 0.16,
+      "latency_p99_ms": 0.16
+    }
+  }
+}
