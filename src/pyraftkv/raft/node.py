@@ -20,6 +20,8 @@ from pyraftkv.raft.replication import handle_append_entries
 from pyraftkv.raft.rpc import (
     AppendEntriesRequest,
     AppendEntriesResponse,
+    InstallSnapshotRequest,
+    InstallSnapshotResponse,
     RequestVoteRequest,
     RequestVoteResponse,
     TimeoutNowRequest,
@@ -369,6 +371,135 @@ class RaftNode:
                 self.replication = None
 
             return response
+    def handle_install_snapshot(
+        self,
+        request: InstallSnapshotRequest,
+    ) -> InstallSnapshotResponse:
+        with self._raft_lock:
+            if request.term < self.state.current_term:
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=False,
+                )
+
+            previous_term = self.state.current_term
+            self.state.become_follower(
+                term=request.term,
+                leader_id=request.leader_id,
+            )
+            self.replication = None
+
+            if (
+                request.last_included_index < 0
+                or request.last_included_term < 0
+            ):
+                if self.state.current_term != previous_term:
+                    self._persist_state()
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=False,
+                )
+
+            if (
+                request.last_included_index
+                < self.snapshot.last_included_index
+            ):
+                if self.state.current_term != previous_term:
+                    self._persist_state()
+                self.timer.reset()
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=True,
+                )
+
+            local_boundary_term = self.log.term_at(
+                request.last_included_index
+            )
+
+            if (
+                self.state.commit_index
+                > request.last_included_index
+                and local_boundary_term
+                != request.last_included_term
+            ):
+                if self.state.current_term != previous_term:
+                    self._persist_state()
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=False,
+                )
+
+            new_snapshot = RaftSnapshot(
+                last_included_index=(
+                    request.last_included_index
+                ),
+                last_included_term=(
+                    request.last_included_term
+                ),
+                state=request.state.copy(),
+            )
+            new_log = self.log.copy()
+
+            try:
+                new_log.install_snapshot_boundary(
+                    request.last_included_index,
+                    request.last_included_term,
+                )
+            except ValueError:
+                if self.state.current_term != previous_term:
+                    self._persist_state()
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=False,
+                )
+
+            new_commit_index = max(
+                self.state.commit_index,
+                request.last_included_index,
+            )
+
+            if new_commit_index > new_log.last_index:
+                if self.state.current_term != previous_term:
+                    self._persist_state()
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=False,
+                )
+
+            # Persist the state-machine snapshot before the
+            # compacted journal, then persist commit metadata.
+            if self.persistence is not None:
+                self.persistence.save_snapshot(
+                    new_snapshot
+                )
+                self.persistence.save_log(new_log)
+
+            self.snapshot = new_snapshot
+            self.log = new_log
+            self.store.restore(new_snapshot.state)
+            self.state.commit_index = new_commit_index
+            self.state.last_applied = (
+                request.last_included_index
+            )
+
+            if (
+                self.state.commit_index
+                > self.state.last_applied
+            ):
+                apply_committed_entries(
+                    self.state,
+                    self.log,
+                    self.store,
+                )
+
+            self._persist_state()
+            self.timer.reset()
+
+            return InstallSnapshotResponse(
+                term=self.state.current_term,
+                success=True,
+            )
+
 
     def handle_timeout_now(
         self,
@@ -549,7 +680,7 @@ class RaftNode:
         transport: RaftTransport,
     ) -> bool:
         while True:
-            # Build the request while protecting Raft state.
+            # Build either request while protecting Raft state.
             # Network I/O happens after releasing the lock.
             with self._raft_lock:
                 if self.state.role != NodeRole.LEADER:
@@ -558,18 +689,58 @@ class RaftNode:
                 if self.replication is None:
                     return False
 
-                request = self.replication.build_request(
-                    follower_id,
-                    leader_commit=self.state.commit_index,
-                )
+                next_index = self.replication.next_index[
+                    follower_id
+                ]
 
-                request_term = request.term
+                if next_index <= self.log.base_index:
+                    if (
+                        self.snapshot.last_included_index
+                        != self.log.base_index
+                        or self.snapshot.last_included_term
+                        != self.log.base_term
+                    ):
+                        raise RuntimeError(
+                            "Compacted log has no matching snapshot"
+                        )
+
+                    snapshot_request = InstallSnapshotRequest(
+                        term=self.state.current_term,
+                        leader_id=self.node_id,
+                        last_included_index=(
+                            self.snapshot.last_included_index
+                        ),
+                        last_included_term=(
+                            self.snapshot.last_included_term
+                        ),
+                        state=self.snapshot.state.copy(),
+                    )
+                    append_request = None
+                    request_term = snapshot_request.term
+                else:
+                    append_request = (
+                        self.replication.build_request(
+                            follower_id,
+                            leader_commit=(
+                                self.state.commit_index
+                            ),
+                        )
+                    )
+                    snapshot_request = None
+                    request_term = append_request.term
 
             try:
-                response = transport.append_entries(
-                    follower_id,
-                    request,
-                )
+                if snapshot_request is not None:
+                    response = transport.install_snapshot(
+                        follower_id,
+                        snapshot_request,
+                    )
+                else:
+                    assert append_request is not None
+                    response = transport.append_entries(
+                        follower_id,
+                        append_request,
+                    )
             except TransportError:
                 return False
 
@@ -587,19 +758,34 @@ class RaftNode:
                     self.state.become_follower(
                         term=response.term,
                     )
-
                     self._persist_state()
-
                     self.replication = None
-
                     return False
+
+                if snapshot_request is not None:
+                    if not response.success:
+                        return False
+
+                    self.replication.record_snapshot_success(
+                        follower_id,
+                        snapshot_request.last_included_index,
+                    )
+
+                    if (
+                        self.replication.next_index[follower_id]
+                        <= self.log.last_index
+                    ):
+                        continue
+
+                    return True
+
+                assert append_request is not None
 
                 if response.success:
                     self.replication.record_success(
                         follower_id,
-                        request,
+                        append_request,
                     )
-
                     return True
 
                 # The follower's log does not match.

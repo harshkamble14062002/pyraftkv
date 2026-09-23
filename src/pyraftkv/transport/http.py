@@ -3,6 +3,8 @@ import httpx
 from pyraftkv.raft.rpc import (
     AppendEntriesRequest,
     AppendEntriesResponse,
+    InstallSnapshotRequest,
+    InstallSnapshotResponse,
     RequestVoteRequest,
     RequestVoteResponse,
     TimeoutNowRequest,
@@ -12,6 +14,8 @@ from pyraftkv.transport.base import TransportError
 from pyraftkv.transport.serialization import (
     append_entries_response_from_dict,
     append_entries_to_dict,
+    install_snapshot_response_from_dict,
+    install_snapshot_to_dict,
     request_vote_response_from_dict,
     request_vote_to_dict,
     timeout_now_response_from_dict,
@@ -102,6 +106,37 @@ class HTTPTransport:
         except (KeyError, TypeError, ValueError) as exc:
             raise TransportError(
                 f"Invalid AppendEntries response from {target_id}"
+            ) from exc
+
+    def install_snapshot(
+        self,
+        target_id: str,
+        request: InstallSnapshotRequest,
+    ) -> InstallSnapshotResponse:
+        url = self._url(
+            target_id,
+            "/raft/install-snapshot",
+        )
+
+        try:
+            response = self._client.post(
+                url,
+                json=install_snapshot_to_dict(request),
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise TransportError(
+                f"InstallSnapshot to {target_id} failed"
+            ) from exc
+
+        try:
+            return install_snapshot_response_from_dict(
+                response.json()
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TransportError(
+                f"Invalid InstallSnapshot response from "
+                f"{target_id}"
             ) from exc
 
     def timeout_now(

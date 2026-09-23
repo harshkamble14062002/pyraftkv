@@ -1,6 +1,8 @@
 from pyraftkv.raft.rpc import (
     AppendEntriesRequest,
     AppendEntriesResponse,
+    InstallSnapshotRequest,
+    InstallSnapshotResponse,
     RequestVoteRequest,
     RequestVoteResponse,
     TimeoutNowRequest,
@@ -72,3 +74,13 @@ class InMemoryTransport:
         node = self._get_node(target_id)
 
         return node.handle_timeout_now(request)
+
+
+    def install_snapshot(
+        self,
+        target_id: str,
+        request: InstallSnapshotRequest,
+    ) -> InstallSnapshotResponse:
+        node = self._get_node(target_id)
+
+        return node.handle_install_snapshot(request)

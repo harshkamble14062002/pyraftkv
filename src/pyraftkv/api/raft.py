@@ -6,6 +6,8 @@ from pyraftkv.raft.node import RaftNode
 from pyraftkv.transport.serialization import (
     append_entries_from_dict,
     append_entries_response_to_dict,
+    install_snapshot_from_dict,
+    install_snapshot_response_to_dict,
     request_vote_from_dict,
     request_vote_response_to_dict,
     timeout_now_from_dict,
@@ -53,6 +55,22 @@ def create_raft_router(
 
         return append_entries_response_to_dict(response)
 
+
+    @router.post("/install-snapshot")
+    def install_snapshot(
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            request = install_snapshot_from_dict(payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid InstallSnapshot payload",
+            ) from exc
+
+        response = node.handle_install_snapshot(request)
+
+        return install_snapshot_response_to_dict(response)
 
     @router.post("/timeout-now")
     def timeout_now(
