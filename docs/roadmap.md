@@ -3,9 +3,9 @@
 ## Current status
 
 PyRaftKV has completed the implementation and documentation phases of Issue
-#46 on the production-hardening branch. The remaining milestone is final v1.0
-release preparation and authorization. Project metadata still reports the
-pre-release version, and no v1.0.0 tag has been created.
+#46 on the production-hardening branch. The v1.0 release candidate passed final
+validation on 2026-09-23. Package metadata reports 1.0.0, but no v1.0.0 tag or
+published release has been created.
 
 ## Completed foundations
 
@@ -37,25 +37,29 @@ pre-release version, and no v1.0.0 tag has been created.
 | J | Complete | Expanded bounded-cardinality metrics and Grafana dashboard |
 | K | Complete | Real Docker leader-failover and catch-up demonstration |
 | L | Complete | README, architecture, Raft, failure, benchmark, and roadmap docs |
-| M | Pending | Final v1.0 validation and release preparation |
+| M | Ready | v1.0 validation and release preparation; tag authorization pending |
 
 ## Phase M checklist
 
-Before a v1.0 release candidate can be declared ready:
+Validated on 2026-09-23:
 
-- [ ] update package version metadata intentionally;
-- [ ] run the complete pytest suite;
-- [ ] run repository-wide Ruff;
-- [ ] run git diff --check;
-- [ ] validate docker compose config and build;
-- [ ] start all nodes, Prometheus, and Grafana;
-- [ ] verify leader election and normal write/read replication;
-- [ ] rerun the automated leader-failover demonstration;
-- [ ] verify restarted-node catch-up;
-- [ ] inspect Prometheus targets and Grafana startup;
-- [ ] prepare release notes with tested limitations;
-- [ ] confirm the worktree and commit history;
+- [x] update package and API version metadata to 1.0.0;
+- [x] run the complete pytest suite: 263 passed;
+- [x] run repository-wide Ruff;
+- [x] run git diff --check;
+- [x] validate docker compose config and rebuild all node images;
+- [x] start all nodes, Prometheus, and Grafana;
+- [x] verify leader election and normal write/read replication;
+- [x] rerun the automated leader-failover demonstration;
+- [x] verify the restarted node caught up through commit index 6;
+- [x] inspect three healthy Prometheus targets and Grafana database health;
+- [x] prepare release notes with tested limitations;
+- [x] confirm the intended worktree and commit history;
 - [ ] obtain explicit authorization before creating a v1.0.0 tag.
+
+The Docker run did not compact because automatic compaction is intentionally
+not implemented. InstallSnapshot catch-up and snapshot recovery passed in the
+deterministic integration suite included in the 263 tests.
 
 A tag or published release is never created automatically.
 

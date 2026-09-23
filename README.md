@@ -242,5 +242,6 @@ PyRaftKV is educational, not a production database.
 
 ## Roadmap and release status
 
-See [the roadmap](docs/roadmap.md). No v1.0.0 tag or release is created
-automatically; tagging requires explicit authorization after final validation.
+See [the roadmap](docs/roadmap.md) and [v1.0 release notes](RELEASE_NOTES.md).
+Version metadata is ready, but no v1.0.0 tag or release is created automatically;
+tagging requires explicit authorization after final validation.
