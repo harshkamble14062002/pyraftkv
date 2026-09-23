@@ -178,6 +178,13 @@ class RaftNode:
         self._last_read_quorum_time: float | None = None
         self._leadership_transfer_in_progress = False
 
+    def close(self) -> None:
+        """Release persistent follower-replication workers."""
+        self._replication_executor.shutdown(
+            wait=False,
+            cancel_futures=True,
+        )
+
     def _persist_state(self) -> None:
         if self.persistence is None:
             return

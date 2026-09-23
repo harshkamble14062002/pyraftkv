@@ -197,6 +197,7 @@ def create_node_app(
                     pass
 
                 runtime.transport.close()
+                runtime.node.close()
 
     app = FastAPI(
         title="PyRaftKV",
