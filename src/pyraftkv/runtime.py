@@ -84,6 +84,8 @@ def create_runtime(
         node_id=node_id,
     )
 
+    node.set_observer(metrics)
+
     metrics.update_from_node(node)
 
     return NodeRuntime(
@@ -210,6 +212,10 @@ def create_node_app(
             node_id=runtime.node.node_id,
         )
 
+    runtime.node.set_observer(
+        runtime.metrics
+    )
+
     runtime.metrics.update_from_node(
         runtime.node
     )
@@ -226,7 +232,10 @@ def create_node_app(
         duration = time.perf_counter() - start
 
         if runtime.metrics is not None:
-            path = request.url.path
+            route = request.scope.get("route")
+            path = getattr(
+                route, "path", "<unmatched>"
+            )
 
             runtime.metrics.http_requests.labels(
                 node_id=runtime.node.node_id,

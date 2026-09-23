@@ -114,6 +114,33 @@ def test_metrics_endpoint():
 
     )
 
+def test_http_metrics_use_bounded_route_templates(
+    tmp_path,
+):
+    runtime = create_runtime(
+        "node-1",
+        {
+            "node-2": "http://127.0.0.1:8002",
+            "node-3": "http://127.0.0.1:8003",
+        },
+        data_dir=tmp_path,
+    )
+    app = create_node_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/kv/user-supplied-key"
+        )
+
+    assert response.status_code == 409
+    assert runtime.metrics is not None
+
+    output = runtime.metrics.render().decode()
+
+    assert 'path="/kv/{key}"' in output
+    assert "user-supplied-key" not in output
+
+
 def test_runtime_transfers_leadership_on_shutdown(
     tmp_path,
 ):

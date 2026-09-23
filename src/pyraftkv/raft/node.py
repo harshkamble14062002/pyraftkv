@@ -1,5 +1,6 @@
 
 
+import json
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -15,6 +16,7 @@ from pyraftkv.raft.election import ElectionTracker
 from pyraftkv.raft.election_trigger import start_election_if_needed
 from pyraftkv.raft.leader import LeaderReplication
 from pyraftkv.raft.log import LogEntry, RaftCommand, RaftLog
+from pyraftkv.raft.observer import RaftObserver
 from pyraftkv.raft.persistence import RaftPersistence
 from pyraftkv.raft.replication import handle_append_entries
 from pyraftkv.raft.rpc import (
@@ -181,6 +183,7 @@ class RaftNode:
         self._last_read_quorum_term: int | None = None
         self._last_read_quorum_time: float | None = None
         self._leadership_transfer_in_progress = False
+        self._observer: RaftObserver | None = None
 
     def close(self, wait_for_workers: bool = False) -> None:
         """Release persistent follower-replication workers."""
@@ -193,6 +196,31 @@ class RaftNode:
             wait=wait_for_workers,
             cancel_futures=True,
         )
+
+    def set_observer(
+        self,
+        observer: RaftObserver | None,
+    ) -> None:
+        """Attach an operational-event observer."""
+        with self._raft_lock:
+            self._observer = observer
+
+    def _record_rpc(
+        self,
+        rpc: str,
+        started_at: float,
+        success: bool,
+    ) -> None:
+        observer = self._observer
+
+        if observer is not None:
+            observer.record_rpc(
+                rpc=rpc,
+                duration_seconds=(
+                    perf_counter() - started_at
+                ),
+                success=success,
+            )
 
     def status(self) -> RaftNodeStatus:
         """Return a detached, read-only snapshot of Raft state."""
@@ -371,6 +399,11 @@ class RaftNode:
             if self.replication is not None:
                 self.replication.log = self.log
 
+            observer = self._observer
+
+            if observer is not None:
+                observer.record_log_compaction()
+
             return True
 
     def compact_log(self) -> bool:
@@ -454,6 +487,8 @@ class RaftNode:
         self,
         request: InstallSnapshotRequest,
     ) -> InstallSnapshotResponse:
+        started_at = perf_counter()
+
         with self._raft_lock:
             if request.term < self.state.current_term:
                 return InstallSnapshotResponse(
@@ -574,6 +609,20 @@ class RaftNode:
             self._persist_state()
             self.timer.reset()
 
+            observer = self._observer
+
+            if observer is not None:
+                serialized_state = json.dumps(
+                    request.state,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+                observer.record_snapshot_installation(
+                    duration_seconds=perf_counter() - started_at,
+                    size_bytes=len(serialized_state),
+                )
+
             return InstallSnapshotResponse(
                 term=self.state.current_term,
                 success=True,
@@ -615,6 +664,26 @@ class RaftNode:
                 accepted=accepted,
             )
 
+    def _request_vote_from_peer(
+        self,
+        transport: RaftTransport,
+        peer_id: str,
+        request: RequestVoteRequest,
+    ) -> RequestVoteResponse:
+        started_at = perf_counter()
+        success = False
+
+        try:
+            response = transport.request_vote(
+                peer_id,
+                request,
+            )
+            success = True
+            return response
+        finally:
+            self._record_rpc(
+                "request_vote", started_at, success
+            )
 
     def tick(
         self,
@@ -623,6 +692,7 @@ class RaftNode:
         # Protect Raft state changes with the lock, but never
         # perform network I/O while holding it.
         with self._raft_lock:
+            previous_role = self.state.role
             previous_term = self.state.current_term
             previous_vote = self.state.voted_for
 
@@ -636,6 +706,13 @@ class RaftNode:
 
             if (
                 self.state.current_term != previous_term
+                and self.state.voted_for == self.node_id
+                and self._observer is not None
+            ):
+                self._observer.record_election_attempt()
+
+            if (
+                self.state.current_term != previous_term
                 or self.state.voted_for != previous_vote
             ):
                 self._persist_state()
@@ -643,6 +720,13 @@ class RaftNode:
             # Single-node cluster may elect itself immediately.
             if self.state.role == NodeRole.LEADER:
                 self._initialize_leader_replication()
+
+                if (
+                    previous_role != NodeRole.LEADER
+                    and self._observer is not None
+                ):
+                    self._observer.record_leadership_change()
+
                 return self.state.role
 
             current_role = self.state.role
@@ -656,7 +740,8 @@ class RaftNode:
 
         futures = {
             executor.submit(
-                transport.request_vote,
+                self._request_vote_from_peer,
+                transport,
                 peer_id,
                 request,
             ): (peer_id, request)
@@ -718,6 +803,9 @@ class RaftNode:
                         == NodeRole.LEADER
                     ):
                         self._initialize_leader_replication()
+
+                        if self._observer is not None:
+                            self._observer.record_leadership_change()
 
                         return self.state.role
 
@@ -808,6 +896,14 @@ class RaftNode:
                     snapshot_request = None
                     request_term = append_request.term
 
+            rpc = (
+                "install_snapshot"
+                if snapshot_request is not None
+                else "append_entries"
+            )
+            started_at = perf_counter()
+            success = False
+
             try:
                 if snapshot_request is not None:
                     response = transport.install_snapshot(
@@ -820,8 +916,14 @@ class RaftNode:
                         follower_id,
                         append_request,
                     )
+
+                success = True
             except TransportError:
                 return False
+            finally:
+                self._record_rpc(
+                    rpc, started_at, success
+                )
 
             with self._raft_lock:
                 # The node may have changed term or stepped down
@@ -1053,6 +1155,31 @@ class RaftNode:
         timeout: float = 0.25,
     ) -> None:
         """Confirm leadership with a fresh current-term quorum."""
+        started_at = perf_counter()
+        success = False
+
+        try:
+            self._confirm_read_quorum(
+                transport,
+                timeout,
+            )
+            success = True
+        finally:
+            observer = self._observer
+
+            if observer is not None:
+                observer.record_read_barrier(
+                    duration_seconds=(
+                        perf_counter() - started_at
+                    ),
+                    success=success,
+                )
+
+    def _confirm_read_quorum(
+        self,
+        transport: RaftTransport,
+        timeout: float,
+    ) -> None:
         with self._replication_lock:
             with self._raft_lock:
                 if self.state.role != NodeRole.LEADER:
@@ -1304,13 +1431,23 @@ class RaftNode:
                         leader_id=self.node_id,
                     )
 
+                started_at = perf_counter()
+                success = False
+
                 try:
                     response = transport.timeout_now(
                         selected,
                         request,
                     )
+                    success = True
                 except TransportError:
                     return False
+                finally:
+                    self._record_rpc(
+                        "timeout_now",
+                        started_at,
+                        success,
+                    )
 
                 with self._raft_lock:
                     if (
