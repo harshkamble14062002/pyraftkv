@@ -148,6 +148,8 @@ class RaftCluster:
         return restarted
 
     def assert_invariants(self) -> None:
+        committed_entries = {}
+
         for node_id, node in self.nodes.items():
             if (
                 node.state.last_applied
@@ -163,6 +165,41 @@ class RaftCluster:
                     f"{node_id} committed beyond its log; "
                     f"{self.diagnostics()}"
                 )
+
+            retained = node.log.entries_from(
+                node.log.first_index
+            )
+            retained_indexes = [
+                entry.index
+                for entry in retained
+            ]
+            expected_indexes = list(
+                range(
+                    node.log.first_index,
+                    node.log.last_index + 1,
+                )
+            )
+
+            if retained_indexes != expected_indexes:
+                raise AssertionError(
+                    f"{node_id} has non-contiguous log indexes; "
+                    f"{self.diagnostics()}"
+                )
+
+            for entry in retained:
+                if entry.index > node.state.commit_index:
+                    continue
+
+                existing = committed_entries.setdefault(
+                    entry.index,
+                    entry,
+                )
+
+                if existing != entry:
+                    raise AssertionError(
+                        "Committed entries disagree at index "
+                        f"{entry.index}; {self.diagnostics()}"
+                    )
 
             previous_commit = self._last_commit[node_id]
 
