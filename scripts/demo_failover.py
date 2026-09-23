@@ -205,7 +205,7 @@ class ClusterHTTP:
                 f"{method} {request.full_url} returned "
                 f"HTTP {exc.code}: {detail}"
             ) from exc
-        except (TimeoutError, URLError) as exc:
+        except (OSError, URLError) as exc:
             raise DemoError(
                 f"{method} {request.full_url} failed: {exc}"
             ) from exc
@@ -238,7 +238,7 @@ class ClusterHTTP:
                 timeout=self.request_timeout,
             ) as response:
                 return response.read().decode("utf-8")
-        except (HTTPError, TimeoutError, URLError) as exc:
+        except (HTTPError, OSError, URLError) as exc:
             raise DemoError(
                 f"GET {request.full_url} failed: {exc}"
             ) from exc

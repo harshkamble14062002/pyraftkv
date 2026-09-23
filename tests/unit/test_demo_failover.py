@@ -7,6 +7,7 @@ from urllib.parse import unquote
 import pytest
 
 from scripts.demo_failover import (
+    ClusterHTTP,
     DemoError,
     DockerCompose,
     FailoverDemo,
@@ -266,6 +267,18 @@ def test_missing_docker_reports_actionable_error():
         return_value=None,
     ), pytest.raises(DemoError, match="not installed"):
         compose.verify()
+
+
+def test_http_connection_reset_is_retryable_demo_error():
+    http = ClusterHTTP()
+
+    with patch(
+        "scripts.demo_failover.urlopen",
+        side_effect=ConnectionResetError(
+            "connection reset"
+        ),
+    ), pytest.raises(DemoError, match="failed"):
+        http.request_json("node1", "/health")
 
 
 def test_demo_cli_help_runs_without_docker():
