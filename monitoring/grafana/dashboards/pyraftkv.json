@@ -285,6 +285,151 @@
       ],
       "title": "HTTP p95 Latency",
       "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
+      "id": 8,
+      "targets": [
+        {
+          "expr": "sum by (node_id) (rate(pyraftkv_raft_election_attempts_total[5m]))",
+          "legendFormat": "{{node_id}} elections",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (node_id) (rate(pyraftkv_raft_leadership_changes_total[5m]))",
+          "legendFormat": "{{node_id}} became leader",
+          "refId": "B"
+        }
+      ],
+      "title": "Election and Leadership Change Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23},
+      "id": 9,
+      "targets": [
+        {
+          "expr": "sum by (node_id, rpc) (rate(pyraftkv_raft_rpc_failures_total[5m]))",
+          "legendFormat": "{{node_id}} {{rpc}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Raft RPC Failure Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
+      "id": 10,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, node_id, rpc) (rate(pyraftkv_raft_rpc_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{node_id}} {{rpc}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Raft RPC p95 Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 31},
+      "id": 11,
+      "targets": [
+        {
+          "expr": "pyraftkv_raft_follower_replication_lag",
+          "legendFormat": "{{node_id}} to {{follower_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Follower Replication Lag",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 39},
+      "id": 12,
+      "targets": [
+        {
+          "expr": "sum by (node_id) (rate(pyraftkv_raft_read_barrier_attempts_total[5m]))",
+          "legendFormat": "{{node_id}} attempts",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (node_id) (rate(pyraftkv_raft_read_barrier_failures_total[5m]))",
+          "legendFormat": "{{node_id}} failures",
+          "refId": "B"
+        }
+      ],
+      "title": "Read Barrier Attempts and Failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 39},
+      "id": 13,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, node_id) (rate(pyraftkv_raft_read_barrier_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{node_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Read Barrier p95 Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 47},
+      "id": 14,
+      "targets": [
+        {
+          "expr": "sum by (node_id) (rate(pyraftkv_raft_snapshot_installations_total[5m]))",
+          "legendFormat": "{{node_id}} installs",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (node_id) (rate(pyraftkv_raft_log_compactions_total[5m]))",
+          "legendFormat": "{{node_id}} compactions",
+          "refId": "B"
+        }
+      ],
+      "title": "Snapshot and Compaction Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 47},
+      "id": 15,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, node_id) (rate(pyraftkv_raft_snapshot_install_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{node_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Snapshot Install p95 Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "Bps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 55},
+      "id": 16,
+      "targets": [
+        {
+          "expr": "sum by (node_id) (rate(pyraftkv_raft_snapshot_install_bytes_total[5m]))",
+          "legendFormat": "{{node_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Snapshot Install Throughput",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",
@@ -304,5 +449,5 @@
   "timezone": "browser",
   "title": "PyRaftKV Cluster",
   "uid": "pyraftkv-cluster",
-  "version": 1
+  "version": 2
 }

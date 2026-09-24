@@ -1,6 +1,8 @@
 
 
+import json
 from concurrent.futures import (
+    FIRST_COMPLETED,
     Future,
     ThreadPoolExecutor,
     as_completed,
@@ -8,21 +10,32 @@ from concurrent.futures import (
 )
 from pathlib import Path
 from threading import Lock, RLock
+from time import monotonic, perf_counter
 
 from pyraftkv.raft.election import ElectionTracker
 from pyraftkv.raft.election_trigger import start_election_if_needed
 from pyraftkv.raft.leader import LeaderReplication
 from pyraftkv.raft.log import LogEntry, RaftCommand, RaftLog
+from pyraftkv.raft.observer import RaftObserver
 from pyraftkv.raft.persistence import RaftPersistence
 from pyraftkv.raft.replication import handle_append_entries
 from pyraftkv.raft.rpc import (
     AppendEntriesRequest,
     AppendEntriesResponse,
+    InstallSnapshotRequest,
+    InstallSnapshotResponse,
     RequestVoteRequest,
     RequestVoteResponse,
+    TimeoutNowRequest,
+    TimeoutNowResponse,
 )
+from pyraftkv.raft.snapshot import RaftSnapshot
 from pyraftkv.raft.state import NodeRole, RaftState
 from pyraftkv.raft.state_machine import apply_committed_entries
+from pyraftkv.raft.status import (
+    FollowerStatus,
+    RaftNodeStatus,
+)
 from pyraftkv.raft.timer import ElectionTimer
 from pyraftkv.raft.vote import handle_request_vote
 from pyraftkv.storage.store import KVStore
@@ -30,7 +43,15 @@ from pyraftkv.transport.base import RaftTransport, TransportError
 
 
 class NotLeaderError(RuntimeError):
-    """Raised when a client write is sent to a non-leader node."""
+    """Raised when a leader-only client operation reaches a non-leader."""
+
+
+class LeadershipTransferInProgressError(RuntimeError):
+    """Raised when a write arrives during leadership transfer."""
+
+
+class ReadQuorumError(RuntimeError):
+    """Raised when leadership cannot be confirmed for a linearizable read."""
 
 
 class RaftNode:
@@ -62,33 +83,82 @@ class RaftNode:
             else None
         )
 
-        # Load persisted Raft state and log when persistence
-        # is enabled. Otherwise start with fresh state.
+        # Load persisted Raft state, snapshot, and log.
+        # Existing installations have an empty snapshot boundary.
         if self.persistence is None:
             self.state = RaftState(
                 node_id=node_id,
             )
+            self.snapshot = RaftSnapshot()
             self.log = RaftLog()
         else:
             self.state = self.persistence.load_state(
                 node_id
             )
+            self.snapshot = (
+                self.persistence.load_snapshot()
+            )
             self.log = self.persistence.load_log()
 
+            if (
+                self.snapshot.last_included_index
+                < self.log.base_index
+            ):
+                raise RuntimeError(
+                    "Raft log is compacted beyond durable snapshot"
+                )
+
+            if (
+                self.snapshot.last_included_index
+                == self.log.base_index
+                and self.snapshot.last_included_term
+                != self.log.base_term
+            ):
+                raise RuntimeError(
+                    "Raft snapshot conflicts with log boundary"
+                )
+
+            if (
+                self.snapshot.last_included_index
+                > self.log.base_index
+            ):
+                # Crash-safe recovery when the snapshot was
+                # persisted before log compaction completed.
+                self.log.install_snapshot_boundary(
+                    self.snapshot.last_included_index,
+                    self.snapshot.last_included_term,
+                )
+                self.persistence.save_log(self.log)
+
+        if (
+            self.state.commit_index
+            < self.snapshot.last_included_index
+        ):
+            self.state.commit_index = (
+                self.snapshot.last_included_index
+            )
+            self._persist_state()
+
         # A persisted commit index must never point beyond
-        # the available Raft log.
+        # the snapshot boundary plus retained log suffix.
         if self.state.commit_index > self.log.last_index:
             raise RuntimeError(
                 "Persisted commit index exceeds Raft log"
             )
 
-        # KVStore is runtime state. Rebuild it by replaying
-        # the committed portion of the Raft log.
+        # Rebuild runtime KV state from the durable snapshot,
+        # then replay committed entries in the retained suffix.
         self.store = KVStore()
+        self.store.restore(self.snapshot.state)
 
-        self.state.last_applied = 0
+        self.state.last_applied = (
+            self.snapshot.last_included_index
+        )
 
-        if self.state.commit_index > 0:
+        if (
+            self.state.commit_index
+            > self.state.last_applied
+        ):
             apply_committed_entries(
                 self.state,
                 self.log,
@@ -109,6 +179,111 @@ class RaftNode:
         )
 
         self.replication: LeaderReplication | None = None
+        self._read_lease_duration = 0.5
+        self._last_read_quorum_term: int | None = None
+        self._last_read_quorum_time: float | None = None
+        self._leadership_transfer_in_progress = False
+        self._observer: RaftObserver | None = None
+
+    def close(self, wait_for_workers: bool = False) -> None:
+        """Release persistent follower-replication workers."""
+        # Synchronize with an active inbound handler, but release
+        # the Raft lock before workers are joined.
+        with self._raft_lock:
+            pass
+
+        self._replication_executor.shutdown(
+            wait=wait_for_workers,
+            cancel_futures=True,
+        )
+
+    def set_observer(
+        self,
+        observer: RaftObserver | None,
+    ) -> None:
+        """Attach an operational-event observer."""
+        with self._raft_lock:
+            self._observer = observer
+
+    def _record_rpc(
+        self,
+        rpc: str,
+        started_at: float,
+        success: bool,
+    ) -> None:
+        observer = self._observer
+
+        if observer is not None:
+            observer.record_rpc(
+                rpc=rpc,
+                duration_seconds=(
+                    perf_counter() - started_at
+                ),
+                success=success,
+            )
+
+    def status(self) -> RaftNodeStatus:
+        """Return a detached, read-only snapshot of Raft state."""
+        with self._raft_lock:
+            followers: tuple[
+                FollowerStatus,
+                ...,
+            ] | None = None
+
+            if (
+                self.state.role == NodeRole.LEADER
+                and self.replication is not None
+            ):
+                followers = tuple(
+                    FollowerStatus(
+                        node_id=follower_id,
+                        match_index=(
+                            self.replication.match_index[
+                                follower_id
+                            ]
+                        ),
+                        next_index=(
+                            self.replication.next_index[
+                                follower_id
+                            ]
+                        ),
+                        replication_lag=max(
+                            0,
+                            self.log.last_index
+                            - self.replication.match_index[
+                                follower_id
+                            ],
+                        ),
+                    )
+                    for follower_id in sorted(
+                        self.replication.followers
+                    )
+                )
+
+            return RaftNodeStatus(
+                node_id=self.node_id,
+                role=self.state.role.value,
+                current_term=self.state.current_term,
+                leader_id=self.state.leader_id,
+                commit_index=self.state.commit_index,
+                last_applied=self.state.last_applied,
+                log_base_index=self.log.base_index,
+                log_base_term=self.log.base_term,
+                log_last_index=self.log.last_index,
+                log_last_term=self.log.last_term,
+                snapshot_index=(
+                    self.snapshot.last_included_index
+                ),
+                snapshot_term=(
+                    self.snapshot.last_included_term
+                ),
+                peers=tuple(
+                    sorted(
+                        self.members - {self.node_id}
+                    )
+                ),
+                followers=followers,
+            )
 
     def _persist_state(self) -> None:
         if self.persistence is None:
@@ -169,10 +344,71 @@ class RaftNode:
         # truncate from 2
         # append new 2
         # append new 3
+        replace_from = before_entries[
+            common_prefix_length
+        ].index
         self.persistence.replace_log_suffix(
-            common_prefix_length + 1,
+            replace_from,
             new_suffix,
         )
+    def create_snapshot(self) -> bool:
+        """Persist applied state, then compact the covered log prefix."""
+        with self._raft_lock:
+            snapshot_index = min(
+                self.state.commit_index,
+                self.state.last_applied,
+            )
+
+            if snapshot_index <= self.log.base_index:
+                return False
+
+            snapshot_term = self.log.term_at(
+                snapshot_index
+            )
+
+            if snapshot_term is None:
+                raise RuntimeError(
+                    "Snapshot boundary is missing from Raft log"
+                )
+
+            snapshot = RaftSnapshot(
+                last_included_index=snapshot_index,
+                last_included_term=snapshot_term,
+                state=self.store.snapshot(),
+            )
+
+            # The durable snapshot must exist before any log
+            # entries it covers are removed.
+            if self.persistence is not None:
+                self.persistence.save_snapshot(snapshot)
+
+            compacted_log = self.log.copy()
+            compacted_log.compact_through(
+                snapshot_index
+            )
+
+            if self.persistence is not None:
+                self.persistence.save_log(
+                    compacted_log
+                )
+                self._persist_state()
+
+            self.snapshot = snapshot
+            self.log = compacted_log
+
+            if self.replication is not None:
+                self.replication.log = self.log
+
+            observer = self._observer
+
+            if observer is not None:
+                observer.record_log_compaction()
+
+            return True
+
+    def compact_log(self) -> bool:
+        return self.create_snapshot()
+
 
     def handle_request_vote(
         self,
@@ -204,7 +440,7 @@ class RaftNode:
     ) -> AppendEntriesResponse:
         with self._raft_lock:
             before_entries = tuple(
-                self.log.entries_from(1)
+                self.log.entries_from(self.log.first_index)
             )
 
             before_state = (
@@ -221,7 +457,7 @@ class RaftNode:
             )
 
             after_entries = tuple(
-                self.log.entries_from(1)
+                self.log.entries_from(self.log.first_index)
             )
 
             after_state = (
@@ -247,6 +483,207 @@ class RaftNode:
                 self.replication = None
 
             return response
+    def handle_install_snapshot(
+        self,
+        request: InstallSnapshotRequest,
+    ) -> InstallSnapshotResponse:
+        started_at = perf_counter()
+
+        with self._raft_lock:
+            if request.term < self.state.current_term:
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=False,
+                )
+
+            previous_term = self.state.current_term
+            self.state.become_follower(
+                term=request.term,
+                leader_id=request.leader_id,
+            )
+            self.replication = None
+
+            if (
+                request.last_included_index < 0
+                or request.last_included_term < 0
+            ):
+                if self.state.current_term != previous_term:
+                    self._persist_state()
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=False,
+                )
+
+            if (
+                request.last_included_index
+                < self.snapshot.last_included_index
+            ):
+                if self.state.current_term != previous_term:
+                    self._persist_state()
+                self.timer.reset()
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=True,
+                )
+
+            local_boundary_term = self.log.term_at(
+                request.last_included_index
+            )
+
+            if (
+                self.state.commit_index
+                > request.last_included_index
+                and local_boundary_term
+                != request.last_included_term
+            ):
+                if self.state.current_term != previous_term:
+                    self._persist_state()
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=False,
+                )
+
+            new_snapshot = RaftSnapshot(
+                last_included_index=(
+                    request.last_included_index
+                ),
+                last_included_term=(
+                    request.last_included_term
+                ),
+                state=request.state.copy(),
+            )
+            new_log = self.log.copy()
+
+            try:
+                new_log.install_snapshot_boundary(
+                    request.last_included_index,
+                    request.last_included_term,
+                )
+            except ValueError:
+                if self.state.current_term != previous_term:
+                    self._persist_state()
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=False,
+                )
+
+            new_commit_index = max(
+                self.state.commit_index,
+                request.last_included_index,
+            )
+
+            if new_commit_index > new_log.last_index:
+                if self.state.current_term != previous_term:
+                    self._persist_state()
+                return InstallSnapshotResponse(
+                    term=self.state.current_term,
+                    success=False,
+                )
+
+            # Persist the state-machine snapshot before the
+            # compacted journal, then persist commit metadata.
+            if self.persistence is not None:
+                self.persistence.save_snapshot(
+                    new_snapshot
+                )
+                self.persistence.save_log(new_log)
+
+            self.snapshot = new_snapshot
+            self.log = new_log
+            self.store.restore(new_snapshot.state)
+            self.state.commit_index = new_commit_index
+            self.state.last_applied = (
+                request.last_included_index
+            )
+
+            if (
+                self.state.commit_index
+                > self.state.last_applied
+            ):
+                apply_committed_entries(
+                    self.state,
+                    self.log,
+                    self.store,
+                )
+
+            self._persist_state()
+            self.timer.reset()
+
+            observer = self._observer
+
+            if observer is not None:
+                serialized_state = json.dumps(
+                    request.state,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+                observer.record_snapshot_installation(
+                    duration_seconds=perf_counter() - started_at,
+                    size_bytes=len(serialized_state),
+                )
+
+            return InstallSnapshotResponse(
+                term=self.state.current_term,
+                success=True,
+            )
+
+
+    def handle_timeout_now(
+        self,
+        request: TimeoutNowRequest,
+    ) -> TimeoutNowResponse:
+        with self._raft_lock:
+            if request.term < self.state.current_term:
+                return TimeoutNowResponse(
+                    term=self.state.current_term,
+                    accepted=False,
+                )
+
+            previous_term = self.state.current_term
+
+            if request.term > self.state.current_term:
+                self.state.become_follower(
+                    term=request.term,
+                    leader_id=request.leader_id,
+                )
+
+            accepted = (
+                self.state.role == NodeRole.FOLLOWER
+                and self.state.leader_id == request.leader_id
+            )
+
+            if self.state.current_term != previous_term:
+                self._persist_state()
+
+            if accepted:
+                self.timer.expire_now()
+
+            return TimeoutNowResponse(
+                term=self.state.current_term,
+                accepted=accepted,
+            )
+
+    def _request_vote_from_peer(
+        self,
+        transport: RaftTransport,
+        peer_id: str,
+        request: RequestVoteRequest,
+    ) -> RequestVoteResponse:
+        started_at = perf_counter()
+        success = False
+
+        try:
+            response = transport.request_vote(
+                peer_id,
+                request,
+            )
+            success = True
+            return response
+        finally:
+            self._record_rpc(
+                "request_vote", started_at, success
+            )
 
     def tick(
         self,
@@ -255,6 +692,7 @@ class RaftNode:
         # Protect Raft state changes with the lock, but never
         # perform network I/O while holding it.
         with self._raft_lock:
+            previous_role = self.state.role
             previous_term = self.state.current_term
             previous_vote = self.state.voted_for
 
@@ -268,6 +706,13 @@ class RaftNode:
 
             if (
                 self.state.current_term != previous_term
+                and self.state.voted_for == self.node_id
+                and self._observer is not None
+            ):
+                self._observer.record_election_attempt()
+
+            if (
+                self.state.current_term != previous_term
                 or self.state.voted_for != previous_vote
             ):
                 self._persist_state()
@@ -275,6 +720,13 @@ class RaftNode:
             # Single-node cluster may elect itself immediately.
             if self.state.role == NodeRole.LEADER:
                 self._initialize_leader_replication()
+
+                if (
+                    previous_role != NodeRole.LEADER
+                    and self._observer is not None
+                ):
+                    self._observer.record_leadership_change()
+
                 return self.state.role
 
             current_role = self.state.role
@@ -288,7 +740,8 @@ class RaftNode:
 
         futures = {
             executor.submit(
-                transport.request_vote,
+                self._request_vote_from_peer,
+                transport,
                 peer_id,
                 request,
             ): (peer_id, request)
@@ -351,6 +804,9 @@ class RaftNode:
                     ):
                         self._initialize_leader_replication()
 
+                        if self._observer is not None:
+                            self._observer.record_leadership_change()
+
                         return self.state.role
 
                     if (
@@ -391,7 +847,7 @@ class RaftNode:
         transport: RaftTransport,
     ) -> bool:
         while True:
-            # Build the request while protecting Raft state.
+            # Build either request while protecting Raft state.
             # Network I/O happens after releasing the lock.
             with self._raft_lock:
                 if self.state.role != NodeRole.LEADER:
@@ -400,20 +856,74 @@ class RaftNode:
                 if self.replication is None:
                     return False
 
-                request = self.replication.build_request(
-                    follower_id,
-                    leader_commit=self.state.commit_index,
-                )
+                next_index = self.replication.next_index[
+                    follower_id
+                ]
 
-                request_term = request.term
+                if next_index <= self.log.base_index:
+                    if (
+                        self.snapshot.last_included_index
+                        != self.log.base_index
+                        or self.snapshot.last_included_term
+                        != self.log.base_term
+                    ):
+                        raise RuntimeError(
+                            "Compacted log has no matching snapshot"
+                        )
+
+                    snapshot_request = InstallSnapshotRequest(
+                        term=self.state.current_term,
+                        leader_id=self.node_id,
+                        last_included_index=(
+                            self.snapshot.last_included_index
+                        ),
+                        last_included_term=(
+                            self.snapshot.last_included_term
+                        ),
+                        state=self.snapshot.state.copy(),
+                    )
+                    append_request = None
+                    request_term = snapshot_request.term
+                else:
+                    append_request = (
+                        self.replication.build_request(
+                            follower_id,
+                            leader_commit=(
+                                self.state.commit_index
+                            ),
+                        )
+                    )
+                    snapshot_request = None
+                    request_term = append_request.term
+
+            rpc = (
+                "install_snapshot"
+                if snapshot_request is not None
+                else "append_entries"
+            )
+            started_at = perf_counter()
+            success = False
 
             try:
-                response = transport.append_entries(
-                    follower_id,
-                    request,
-                )
+                if snapshot_request is not None:
+                    response = transport.install_snapshot(
+                        follower_id,
+                        snapshot_request,
+                    )
+                else:
+                    assert append_request is not None
+                    response = transport.append_entries(
+                        follower_id,
+                        append_request,
+                    )
+
+                success = True
             except TransportError:
                 return False
+            finally:
+                self._record_rpc(
+                    rpc, started_at, success
+                )
 
             with self._raft_lock:
                 # The node may have changed term or stepped down
@@ -429,18 +939,42 @@ class RaftNode:
                     self.state.become_follower(
                         term=response.term,
                     )
-
                     self._persist_state()
-
                     self.replication = None
-
                     return False
+
+                if snapshot_request is not None:
+                    if not response.success:
+                        return False
+
+                    self.replication.record_snapshot_success(
+                        follower_id,
+                        snapshot_request.last_included_index,
+                    )
+
+                    if (
+                        self.replication.next_index[follower_id]
+                        <= self.log.last_index
+                    ):
+                        continue
+
+                    return True
+
+                assert append_request is not None
 
                 if response.success:
                     self.replication.record_success(
                         follower_id,
-                        request,
+                        append_request,
                     )
+
+                    if (
+                        self.replication.next_index[follower_id]
+                        <= self.log.last_index
+                        or append_request.leader_commit
+                        < self.state.commit_index
+                    ):
+                        continue
 
                     return True
 
@@ -452,6 +986,7 @@ class RaftNode:
     def _replicate_followers_concurrently(
         self,
         transport: RaftTransport,
+        required_follower: str | None = None,
     ) -> dict[str, bool]:
         with self._raft_lock:
             if self.state.role != NodeRole.LEADER:
@@ -465,6 +1000,7 @@ class RaftNode:
             followers = tuple(
                 self.replication.followers
             )
+            follower_quorum = len(self.members) // 2
 
         if not followers:
             return {}
@@ -505,29 +1041,53 @@ class RaftNode:
         if not active:
             return results
 
-        # Return as soon as any follower responds.
-        # A dead follower must not delay a healthy follower.
-        done, _ = wait(
-            active.values(),
-            timeout=0.25,
-            
-        )
+        # Return after the first successful follower response.
+        # Fast failures must not hide a healthy quorum response,
+        # and a delayed peer must not extend the total wait budget.
+        pending = set(active.values())
+        deadline = perf_counter() + 0.25
 
-        for follower_id, future in active.items():
-            if future not in done:
-                continue
+        while pending:
+            remaining = deadline - perf_counter()
 
-            results[follower_id] = future.result()
+            if remaining <= 0:
+                break
+
+            done, pending = wait(
+                pending,
+                timeout=remaining,
+                return_when=FIRST_COMPLETED,
+            )
+
+            if not done:
+                break
+
+            for follower_id, future in active.items():
+                if future not in done:
+                    continue
+
+                result = future.result()
+                results[follower_id] = result
+
+                if (
+                    self._replication_futures.get(
+                        follower_id
+                    )
+                    is future
+                ):
+                    del self._replication_futures[
+                        follower_id
+                    ]
 
             if (
-                self._replication_futures.get(
-                    follower_id
-                )
-                is future
+                required_follower is None
+                and sum(results.values())
+                >= follower_quorum
             ):
-                del self._replication_futures[
-                    follower_id
-                ]
+                break
+
+            if required_follower in results:
+                break
 
         return results
 
@@ -589,6 +1149,333 @@ class RaftNode:
                 transport
             )
 
+    def confirm_read_quorum(
+        self,
+        transport: RaftTransport,
+        timeout: float = 0.25,
+    ) -> None:
+        """Confirm leadership with a fresh current-term quorum."""
+        started_at = perf_counter()
+        success = False
+
+        try:
+            self._confirm_read_quorum(
+                transport,
+                timeout,
+            )
+            success = True
+        finally:
+            observer = self._observer
+
+            if observer is not None:
+                observer.record_read_barrier(
+                    duration_seconds=(
+                        perf_counter() - started_at
+                    ),
+                    success=success,
+                )
+
+    def _confirm_read_quorum(
+        self,
+        transport: RaftTransport,
+        timeout: float,
+    ) -> None:
+        with self._replication_lock:
+            with self._raft_lock:
+                if self.state.role != NodeRole.LEADER:
+                    raise NotLeaderError(
+                        f"Node {self.node_id} is not the leader"
+                    )
+
+                read_term = self.state.current_term
+                self._initialize_leader_replication()
+
+                if self.replication is None:
+                    raise RuntimeError(
+                        "Leader replication state is unavailable"
+                    )
+
+                followers = tuple(
+                    self.replication.followers
+                )
+                quorum_size = len(self.members) // 2 + 1
+
+            if quorum_size == 1:
+                with self._raft_lock:
+                    if (
+                        self.state.role != NodeRole.LEADER
+                        or self.state.current_term != read_term
+                    ):
+                        raise ReadQuorumError(
+                            "Leadership changed during read confirmation"
+                        )
+
+                    self._last_read_quorum_term = read_term
+                    self._last_read_quorum_time = monotonic()
+                    apply_committed_entries(
+                        self.state,
+                        self.log,
+                        self.store,
+                    )
+                return
+
+            deadline = monotonic() + timeout
+            fresh_futures: dict[str, Future[bool]] = {}
+            confirmed: set[str] = set()
+            failed: set[str] = set()
+
+            while (
+                1 + len(confirmed) < quorum_size
+                and monotonic() < deadline
+            ):
+                active: set[Future[bool]] = set()
+
+                for follower_id in followers:
+                    if (
+                        follower_id in confirmed
+                        or follower_id in failed
+                    ):
+                        continue
+
+                    future = self._replication_futures.get(
+                        follower_id
+                    )
+
+                    if future is not None and future.done():
+                        result = future.result()
+
+                        if (
+                            self._replication_futures.get(
+                                follower_id
+                            )
+                            is future
+                        ):
+                            del self._replication_futures[
+                                follower_id
+                            ]
+
+                        if (
+                            fresh_futures.get(follower_id)
+                            is future
+                        ):
+                            if result:
+                                confirmed.add(follower_id)
+                            else:
+                                failed.add(follower_id)
+                            continue
+
+                        future = None
+
+                    if future is None:
+                        future = self._replication_executor.submit(
+                            self._replicate_to_follower,
+                            follower_id,
+                            transport,
+                        )
+                        self._replication_futures[
+                            follower_id
+                        ] = future
+                        fresh_futures[follower_id] = future
+
+                    active.add(future)
+
+                if 1 + len(confirmed) >= quorum_size:
+                    break
+
+                if not active:
+                    break
+
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+
+                wait(
+                    active,
+                    timeout=remaining,
+                    return_when=FIRST_COMPLETED,
+                )
+
+            with self._raft_lock:
+                if (
+                    self.state.role != NodeRole.LEADER
+                    or self.state.current_term != read_term
+                ):
+                    raise ReadQuorumError(
+                        "Leadership changed during read confirmation"
+                    )
+
+                if 1 + len(confirmed) < quorum_size:
+                    raise ReadQuorumError(
+                        "A current-term read quorum is unavailable"
+                    )
+
+                self._last_read_quorum_term = read_term
+                self._last_read_quorum_time = monotonic()
+                apply_committed_entries(
+                    self.state,
+                    self.log,
+                    self.store,
+                )
+
+    def _has_valid_read_lease(self) -> bool:
+        if self.state.role != NodeRole.LEADER:
+            return False
+
+        if (
+            self._last_read_quorum_term
+            != self.state.current_term
+            or self._last_read_quorum_time is None
+        ):
+            return False
+
+        elapsed = monotonic() - self._last_read_quorum_time
+
+        return 0 <= elapsed < self._read_lease_duration
+
+    def linearizable_get(
+        self,
+        key: str,
+        transport: RaftTransport,
+    ) -> str | None:
+        with self._raft_lock:
+            if self.state.role != NodeRole.LEADER:
+                raise NotLeaderError(
+                    f"Node {self.node_id} is not the leader"
+                )
+
+            if self._has_valid_read_lease():
+                apply_committed_entries(
+                    self.state,
+                    self.log,
+                    self.store,
+                )
+                return self.store.get(key)
+
+        self.confirm_read_quorum(transport)
+
+        with self._raft_lock:
+            if not self._has_valid_read_lease():
+                raise ReadQuorumError(
+                    "Leadership changed after read confirmation"
+                )
+
+            return self.store.get(key)
+
+    def transfer_leadership(
+        self,
+        transport: RaftTransport,
+        target_id: str | None = None,
+    ) -> bool:
+        """Transfer leadership to a responding, fully caught-up follower."""
+        with self._replication_lock:
+            with self._raft_lock:
+                if self.state.role != NodeRole.LEADER:
+                    raise NotLeaderError(
+                        f"Node {self.node_id} is not the leader"
+                    )
+
+                self._initialize_leader_replication()
+
+                if self.replication is None:
+                    return False
+
+                if (
+                    target_id is not None
+                    and target_id not in self.replication.followers
+                ):
+                    raise ValueError(
+                        f"Unknown transfer target: {target_id}"
+                    )
+
+                transfer_term = self.state.current_term
+                self._leadership_transfer_in_progress = True
+
+            try:
+                results = self._replicate_followers_concurrently(
+                    transport,
+                    required_follower=target_id,
+                )
+
+                with self._raft_lock:
+                    if (
+                        self.state.role != NodeRole.LEADER
+                        or self.state.current_term != transfer_term
+                        or self.replication is None
+                    ):
+                        return False
+
+                    eligible = [
+                        follower_id
+                        for follower_id in self.replication.followers
+                        if (
+                            results.get(follower_id) is True
+                            and self.replication.match_index[
+                                follower_id
+                            ]
+                            >= self.log.last_index
+                        )
+                    ]
+
+                    if target_id is None:
+                        if not eligible:
+                            return False
+
+                        selected = min(eligible)
+                    elif target_id in eligible:
+                        selected = target_id
+                    else:
+                        return False
+
+                    request = TimeoutNowRequest(
+                        term=transfer_term,
+                        leader_id=self.node_id,
+                    )
+
+                started_at = perf_counter()
+                success = False
+
+                try:
+                    response = transport.timeout_now(
+                        selected,
+                        request,
+                    )
+                    success = True
+                except TransportError:
+                    return False
+                finally:
+                    self._record_rpc(
+                        "timeout_now",
+                        started_at,
+                        success,
+                    )
+
+                with self._raft_lock:
+                    if (
+                        self.state.role != NodeRole.LEADER
+                        or self.state.current_term != transfer_term
+                    ):
+                        return False
+
+                    if response.term > self.state.current_term:
+                        self.state.become_follower(
+                            term=response.term,
+                        )
+                        self._persist_state()
+                        self.replication = None
+                        return False
+
+                    if not response.accepted:
+                        return False
+
+                    self.state.become_follower(
+                        term=transfer_term,
+                    )
+                    self.replication = None
+                    return True
+            finally:
+                with self._raft_lock:
+                    self._leadership_transfer_in_progress = False
+
     def submit_command(
         self,
         command: RaftCommand,
@@ -606,6 +1493,11 @@ class RaftNode:
         with self._raft_lock:
             if not commands:
                 return []
+
+            if self._leadership_transfer_in_progress:
+                raise LeadershipTransferInProgressError(
+                    "Leader is transferring leadership"
+                )
 
             if self.state.role != NodeRole.LEADER:
                 raise NotLeaderError(

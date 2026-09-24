@@ -36,6 +36,11 @@ class LeaderReplication:
             raise ValueError(f"Unknown follower: {follower}")
 
         next_index = self.next_index[follower]
+        if next_index <= self.log.base_index:
+            raise ValueError(
+                f"Follower {follower} requires a snapshot"
+            )
+
         prev_log_index = next_index - 1
         prev_log_term = self.log.term_at(prev_log_index)
 
@@ -75,6 +80,22 @@ class LeaderReplication:
         )
 
         self.next_index[follower] = self.match_index[follower] + 1
+
+    def record_snapshot_success(
+        self,
+        follower: str,
+        last_included_index: int,
+    ) -> None:
+        if follower not in self.followers:
+            raise ValueError(f"Unknown follower: {follower}")
+
+        self.match_index[follower] = max(
+            self.match_index[follower],
+            last_included_index,
+        )
+        self.next_index[follower] = (
+            self.match_index[follower] + 1
+        )
 
     def record_failure(
         self,

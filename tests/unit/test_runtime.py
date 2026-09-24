@@ -1,8 +1,10 @@
 import argparse
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from pyraftkv.raft.state import NodeRole
 from pyraftkv.runtime import (
     create_node_app,
     create_runtime,
@@ -109,4 +111,60 @@ def test_metrics_endpoint():
     assert (
         "pyraftkv_http_requests_total"
         in response.text
+
+    )
+
+def test_http_metrics_use_bounded_route_templates(
+    tmp_path,
+):
+    runtime = create_runtime(
+        "node-1",
+        {
+            "node-2": "http://127.0.0.1:8002",
+            "node-3": "http://127.0.0.1:8003",
+        },
+        data_dir=tmp_path,
+    )
+    app = create_node_app(runtime)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/kv/user-supplied-key"
+        )
+
+    assert response.status_code == 409
+    assert runtime.metrics is not None
+
+    output = runtime.metrics.render().decode()
+
+    assert 'path="/kv/{key}"' in output
+    assert "user-supplied-key" not in output
+
+
+def test_runtime_transfers_leadership_on_shutdown(
+    tmp_path,
+):
+    runtime = create_runtime(
+        "node-1",
+        {
+            "node-2": "http://127.0.0.1:8002",
+            "node-3": "http://127.0.0.1:8003",
+        },
+        data_dir=tmp_path,
+    )
+    runtime.node.state.current_term = 1
+    runtime.node.state.role = NodeRole.LEADER
+    runtime.node.state.leader_id = "node-1"
+    runtime.node.replicate_log = Mock()
+    runtime.node.transfer_leadership = Mock(
+        return_value=True
+    )
+
+    app = create_node_app(runtime)
+
+    with TestClient(app):
+        pass
+
+    runtime.node.transfer_leadership.assert_called_once_with(
+        runtime.transport
     )

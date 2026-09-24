@@ -10,11 +10,12 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST
 
+from pyraftkv.api.admin import create_admin_router
 from pyraftkv.api.cluster import create_cluster_router
 from pyraftkv.api.raft import create_raft_router
 from pyraftkv.observability.metrics import RaftMetrics
 from pyraftkv.raft.command_processor import RaftCommandProcessor
-from pyraftkv.raft.node import RaftNode
+from pyraftkv.raft.node import NotLeaderError, RaftNode
 from pyraftkv.raft.state import NodeRole
 from pyraftkv.transport.http import HTTPTransport
 
@@ -82,6 +83,8 @@ def create_runtime(
     metrics = RaftMetrics(
         node_id=node_id,
     )
+
+    node.set_observer(metrics)
 
     metrics.update_from_node(node)
 
@@ -166,17 +169,38 @@ def create_node_app(
         try:
             yield
         finally:
-            raft_task.cancel()
-
             try:
-                await raft_task
-            except asyncio.CancelledError:
-                pass
+                if runtime.command_processor is not None:
+                    runtime.command_processor.stop()
 
-            if runtime.command_processor is not None:
-                runtime.command_processor.stop()
+                if (
+                    runtime.node.state.role
+                    == NodeRole.LEADER
+                ):
+                    try:
+                        transferred = await asyncio.to_thread(
+                            runtime.node.transfer_leadership,
+                            runtime.transport,
+                        )
+                    except NotLeaderError:
+                        transferred = False
 
-            runtime.transport.close()
+                    logger.info(
+                        "Leadership transfer on shutdown: "
+                        "node=%s transferred=%s",
+                        runtime.node.node_id,
+                        transferred,
+                    )
+            finally:
+                raft_task.cancel()
+
+                try:
+                    await raft_task
+                except asyncio.CancelledError:
+                    pass
+
+                runtime.transport.close()
+                runtime.node.close()
 
     app = FastAPI(
         title="PyRaftKV",
@@ -187,6 +211,10 @@ def create_node_app(
         runtime.metrics = RaftMetrics(
             node_id=runtime.node.node_id,
         )
+
+    runtime.node.set_observer(
+        runtime.metrics
+    )
 
     runtime.metrics.update_from_node(
         runtime.node
@@ -204,7 +232,10 @@ def create_node_app(
         duration = time.perf_counter() - start
 
         if runtime.metrics is not None:
-            path = request.url.path
+            route = request.scope.get("route")
+            path = getattr(
+                route, "path", "<unmatched>"
+            )
 
             runtime.metrics.http_requests.labels(
                 node_id=runtime.node.node_id,
@@ -250,6 +281,10 @@ def create_node_app(
 
     app.include_router(
         create_raft_router(runtime.node)
+    )
+
+    app.include_router(
+        create_admin_router(runtime.node)
     )
 
     app.include_router(

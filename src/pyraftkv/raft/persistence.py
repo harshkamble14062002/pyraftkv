@@ -6,6 +6,7 @@ from threading import RLock
 from typing import Any
 
 from pyraftkv.raft.log import LogEntry, RaftLog
+from pyraftkv.raft.snapshot import RaftSnapshot
 from pyraftkv.raft.state import RaftState
 from pyraftkv.transport.serialization import (
     log_entry_from_dict,
@@ -31,6 +32,7 @@ class RaftPersistence:
 
         self.state_path = self.directory / "raft-state.json"
         self.log_path = self.directory / "raft-log.json"
+        self.snapshot_path = self.directory / "raft-snapshot.json"
 
         self._write_lock = RLock()
 
@@ -124,6 +126,67 @@ class RaftPersistence:
             voted_for=data.get("voted_for"),
             commit_index=int(data.get("commit_index", 0)),
         )
+
+    def save_snapshot(
+        self,
+        snapshot: RaftSnapshot,
+    ) -> None:
+        self._atomic_write(
+            self.snapshot_path,
+            {
+                "version": snapshot.version,
+                "last_included_index": (
+                    snapshot.last_included_index
+                ),
+                "last_included_term": (
+                    snapshot.last_included_term
+                ),
+                "state": snapshot.state,
+            },
+        )
+
+    def load_snapshot(self) -> RaftSnapshot:
+        if not self.snapshot_path.exists():
+            return RaftSnapshot()
+
+        try:
+            data = json.loads(
+                self.snapshot_path.read_text(
+                    encoding="utf-8",
+                )
+            )
+            raw_state = data["state"]
+
+            if not isinstance(raw_state, dict):
+                raise TypeError(
+                    "snapshot state must be an object"
+                )
+
+            state = {
+                str(key): str(value)
+                for key, value in raw_state.items()
+            }
+
+            return RaftSnapshot(
+                version=int(data.get("version", 1)),
+                last_included_index=int(
+                    data.get("last_included_index", 0)
+                ),
+                last_included_term=int(
+                    data.get("last_included_term", 0)
+                ),
+                state=state,
+            )
+        except (
+            json.JSONDecodeError,
+            KeyError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise RaftPersistenceError(
+                "Unable to load Raft snapshot"
+            ) from exc
 
     def _rewrite_log_records(
         self,
@@ -238,6 +301,32 @@ class RaftPersistence:
             ]
         )
 
+    def replace_log_suffix(
+        self,
+        from_index: int,
+        entries: list[LogEntry],
+    ) -> None:
+        if from_index <= 0:
+            raise ValueError(
+                "from_index must be greater than zero"
+            )
+
+        records = [
+            {
+                "type": "truncate",
+                "from_index": from_index,
+            },
+            *[
+                {
+                    "type": "append",
+                    "entry": log_entry_to_dict(entry),
+                }
+                for entry in entries
+            ],
+        ]
+
+        self._append_log_records(records)
+
     def save_log(
         self,
         log: RaftLog,
@@ -249,13 +338,16 @@ class RaftPersistence:
         """
         entries = [
             log_entry_to_dict(entry)
-            for entry in log.entries_from(1)
+            for entry in log.entries_from(log.first_index)
         ]
 
         self._rewrite_log_records(
             [
                 {
                     "type": "snapshot",
+                    "version": 1,
+                    "base_index": log.base_index,
+                    "base_term": log.base_term,
                     "entries": entries,
                 }
             ]
@@ -365,7 +457,12 @@ class RaftPersistence:
                             f"at line {line_number}"
                         )
 
-                    log = RaftLog()
+                    log = RaftLog(
+                        base_index=int(
+                            record.get("base_index", 0)
+                        ),
+                        base_term=int(record.get("base_term", 0)),
+                    )
 
                     for raw_entry in raw_entries:
                         entry = log_entry_from_dict(

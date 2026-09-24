@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from pyraftkv import __version__
 from pyraftkv.storage.engine import StorageEngine
 
 
@@ -16,7 +17,7 @@ def create_app(
     app = FastAPI(
         title="PyRaftKV",
         description="Distributed key-value store built from scratch in Python",
-        version="0.1.0",
+        version=__version__,
     )
 
     engine = StorageEngine(wal_path)

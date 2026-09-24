@@ -3,8 +3,12 @@ from typing import Protocol
 from pyraftkv.raft.rpc import (
     AppendEntriesRequest,
     AppendEntriesResponse,
+    InstallSnapshotRequest,
+    InstallSnapshotResponse,
     RequestVoteRequest,
     RequestVoteResponse,
+    TimeoutNowRequest,
+    TimeoutNowResponse,
 )
 
 
@@ -18,3 +22,15 @@ class RaftRPCHandler(Protocol):
         self,
         request: AppendEntriesRequest,
     ) -> AppendEntriesResponse: ...
+
+
+    def handle_timeout_now(
+        self,
+        request: TimeoutNowRequest,
+    ) -> TimeoutNowResponse: ...
+
+
+    def handle_install_snapshot(
+        self,
+        request: InstallSnapshotRequest,
+    ) -> InstallSnapshotResponse: ...

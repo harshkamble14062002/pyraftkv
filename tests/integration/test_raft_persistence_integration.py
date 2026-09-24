@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from unittest.mock import Mock
 
 from pyraftkv.raft.node import RaftNode
@@ -48,6 +49,24 @@ def elect_node1(
     return leader
 
 
+def replicate_until(
+    leader: RaftNode,
+    transport: InMemoryTransport,
+    predicate: Callable[[], bool],
+    max_rounds: int = 50,
+) -> None:
+    for _ in range(max_rounds + 1):
+        if predicate():
+            return
+
+        leader.send_heartbeats(transport)
+
+    raise AssertionError(
+        "Followers did not converge within "
+        f"{max_rounds} replication rounds"
+    )
+
+
 def test_full_cluster_restart_preserves_committed_data(
     tmp_path,
 ):
@@ -66,8 +85,21 @@ def test_full_cluster_restart_preserves_committed_data(
 
     assert committed is True
 
+    replicate_until(
+        leader,
+        transport,
+        lambda: all(
+            node.state.commit_index == 1
+            and node.state.last_applied == 1
+            for node in nodes.values()
+        ),
+    )
+
     # Simulate complete process shutdown:
-    # discard every in-memory node.
+    # stop all workers before reopening durable files.
+    for node in nodes.values():
+        node.close(wait_for_workers=True)
+
     new_transport = InMemoryTransport()
 
     restarted = {

@@ -29,3 +29,30 @@ class AppendEntriesRequest:
 class AppendEntriesResponse:
     term: int
     success: bool
+
+
+@dataclass(frozen=True)
+class TimeoutNowRequest:
+    term: int
+    leader_id: str
+
+
+@dataclass(frozen=True)
+class TimeoutNowResponse:
+    term: int
+    accepted: bool
+
+
+@dataclass(frozen=True)
+class InstallSnapshotRequest:
+    term: int
+    leader_id: str
+    last_included_index: int
+    last_included_term: int
+    state: dict[str, str]
+
+
+@dataclass(frozen=True)
+class InstallSnapshotResponse:
+    term: int
+    success: bool

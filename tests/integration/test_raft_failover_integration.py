@@ -64,16 +64,22 @@ class DeadPeerFirstTransport:
             )
 
         if target_id == "node-3":
+            # Make the scenario deterministic: the healthy
+            # voter responds only after the unavailable peer's
+            # RPC is confirmed to be in flight.
+            if not self.dead_request_started.wait(
+                timeout=1.0,
+            ):
+                raise TransportError(
+                    "dead-peer RPC did not start"
+                )
+
             self.healthy_request_started.set()
 
             return RequestVoteResponse(
                 term=request.term,
                 vote_granted=True,
             )
-
-        raise TransportError(
-            f"Unexpected target: {target_id}"
-        )
 
 class DeadFollowerTransport:
     """Simulate one dead follower and one healthy follower."""

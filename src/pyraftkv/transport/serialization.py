@@ -4,8 +4,12 @@ from pyraftkv.raft.log import LogEntry, RaftCommand
 from pyraftkv.raft.rpc import (
     AppendEntriesRequest,
     AppendEntriesResponse,
+    InstallSnapshotRequest,
+    InstallSnapshotResponse,
     RequestVoteRequest,
     RequestVoteResponse,
+    TimeoutNowRequest,
+    TimeoutNowResponse,
 )
 
 
@@ -133,6 +137,98 @@ def append_entries_response_from_dict(
     data: dict[str, Any],
 ) -> AppendEntriesResponse:
     return AppendEntriesResponse(
+        term=int(data["term"]),
+        success=bool(data["success"]),
+    )
+
+
+def timeout_now_to_dict(
+    request: TimeoutNowRequest,
+) -> dict[str, Any]:
+    return {
+        "term": request.term,
+        "leader_id": request.leader_id,
+    }
+
+
+def timeout_now_from_dict(
+    data: dict[str, Any],
+) -> TimeoutNowRequest:
+    return TimeoutNowRequest(
+        term=int(data["term"]),
+        leader_id=str(data["leader_id"]),
+    )
+
+
+def timeout_now_response_to_dict(
+    response: TimeoutNowResponse,
+) -> dict[str, Any]:
+    return {
+        "term": response.term,
+        "accepted": response.accepted,
+    }
+
+
+def timeout_now_response_from_dict(
+    data: dict[str, Any],
+) -> TimeoutNowResponse:
+    return TimeoutNowResponse(
+        term=int(data["term"]),
+        accepted=bool(data["accepted"]),
+    )
+
+
+def install_snapshot_to_dict(
+    request: InstallSnapshotRequest,
+) -> dict[str, Any]:
+    return {
+        "term": request.term,
+        "leader_id": request.leader_id,
+        "last_included_index": (
+            request.last_included_index
+        ),
+        "last_included_term": request.last_included_term,
+        "state": request.state,
+    }
+
+
+def install_snapshot_from_dict(
+    data: dict[str, Any],
+) -> InstallSnapshotRequest:
+    raw_state = data["state"]
+
+    if not isinstance(raw_state, dict):
+        raise TypeError("snapshot state must be an object")
+
+    return InstallSnapshotRequest(
+        term=int(data["term"]),
+        leader_id=str(data["leader_id"]),
+        last_included_index=int(
+            data["last_included_index"]
+        ),
+        last_included_term=int(
+            data["last_included_term"]
+        ),
+        state={
+            str(key): str(value)
+            for key, value in raw_state.items()
+        },
+    )
+
+
+def install_snapshot_response_to_dict(
+    response: InstallSnapshotResponse,
+) -> dict[str, Any]:
+    return {
+        "term": response.term,
+        "success": response.success,
+    }
+
+
+def install_snapshot_response_from_dict(
+    data: dict[str, Any],
+) -> InstallSnapshotResponse:
+    return InstallSnapshotResponse(
         term=int(data["term"]),
         success=bool(data["success"]),
     )

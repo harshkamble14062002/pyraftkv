@@ -76,3 +76,11 @@ def test_reset_extends_deadline(
     timer.reset()
 
     assert timer._deadline > first_deadline
+
+
+def test_expire_now_forces_timeout():
+    timer = ElectionTimer()
+
+    timer.expire_now()
+
+    assert timer.expired() is True

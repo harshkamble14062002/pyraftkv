@@ -80,7 +80,7 @@ def test_put_through_leader_api():
     assert nodes["node-3"].store.get("language") == "python"
 
 
-def test_get_committed_value():
+def test_get_committed_value_from_leader():
     transport, nodes = create_cluster()
 
     leader = elect_node1(
@@ -94,10 +94,8 @@ def test_get_committed_value():
         transport,
     )
 
-    follower = nodes["node-2"]
-
     client = create_client(
-        follower,
+        leader,
         transport,
     )
 
@@ -106,6 +104,44 @@ def test_get_committed_value():
     assert response.status_code == 200
     assert response.json()["value"] == "python"
 
+
+def test_follower_rejects_linearizable_get():
+    transport, nodes = create_cluster()
+    leader = elect_node1(transport, nodes)
+    leader.send_heartbeats(transport)
+
+    client = create_client(
+        nodes["node-2"],
+        transport,
+    )
+
+    response = client.get("/kv/language")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "error": "not_leader",
+        "leader_id": "node-1",
+    }
+
+
+def test_get_returns_503_without_quorum():
+    transport, nodes = create_cluster()
+    leader = elect_node1(transport, nodes)
+    leader.store.put("unsafe", "stale")
+    transport.block("node-2")
+    transport.block("node-3")
+
+    client = create_client(
+        leader,
+        transport,
+    )
+
+    response = client.get("/kv/unsafe")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "error": "quorum_unavailable",
+    }
 
 def test_follower_rejects_put():
     transport, nodes = create_cluster()

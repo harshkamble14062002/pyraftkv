@@ -8,7 +8,12 @@ from pyraftkv.raft.command_processor import (
     RaftCommandProcessor,
 )
 from pyraftkv.raft.log import RaftCommand
-from pyraftkv.raft.node import NotLeaderError, RaftNode
+from pyraftkv.raft.node import (
+    LeadershipTransferInProgressError,
+    NotLeaderError,
+    RaftNode,
+    ReadQuorumError,
+)
 from pyraftkv.transport.base import RaftTransport
 
 
@@ -53,6 +58,13 @@ def create_cluster_router(
                     "error": "command_queue_full",
                 },
             ) from exc
+        except LeadershipTransferInProgressError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "leadership_transfer_in_progress",
+                },
+            ) from exc
         except NotLeaderError as exc:
             raise HTTPException(
                 status_code=409,
@@ -81,7 +93,26 @@ def create_cluster_router(
     def get_key(
         key: str,
     ) -> dict[str, Any]:
-        value = node.store.get(key)
+        try:
+            value = node.linearizable_get(
+                key,
+                transport,
+            )
+        except NotLeaderError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "not_leader",
+                    "leader_id": node.state.leader_id,
+                },
+            ) from exc
+        except ReadQuorumError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "quorum_unavailable",
+                },
+            ) from exc
 
         if value is None:
             raise HTTPException(
@@ -118,6 +149,13 @@ def create_cluster_router(
                 status_code=429,
                 detail={
                     "error": "command_queue_full",
+                },
+            ) from exc
+        except LeadershipTransferInProgressError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "leadership_transfer_in_progress",
                 },
             ) from exc
         except NotLeaderError as exc:

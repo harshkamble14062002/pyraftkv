@@ -37,3 +37,6 @@ class ElectionTimer:
             0.0,
             self._deadline - time.monotonic(),
         )
+
+    def expire_now(self) -> None:
+        self._deadline = 0.0
