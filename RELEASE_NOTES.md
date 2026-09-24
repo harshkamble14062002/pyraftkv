@@ -4,8 +4,8 @@ PyRaftKV 1.0.0 is the first release candidate for the project's complete
 single-group Raft implementation. It focuses on correctness, durable recovery,
 failure handling, observability, and reproducible validation.
 
-No `v1.0.0` tag or published release has been created. Tagging requires
-explicit authorization after the final validation checklist passes.
+PyRaftKV `v1.0.0` has been tagged and published as the first stable project
+release after completing the final validation checklist.
 
 ## Highlights
 
